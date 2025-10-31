@@ -1,0 +1,51 @@
+// src/mercadopago/dto/create-payment.dto.ts
+
+import {
+  IsEmail,
+  IsNumber,
+  IsString,
+  IsNotEmpty,
+  IsPositive,
+} from 'class-validator';
+
+export class CreatePaymentDTO {
+  /**
+   * Identificador interno del item.
+   * @example "cuota-socio-001"
+   */
+  @IsString()
+  @IsNotEmpty()
+  itemId: string;
+
+  /**
+   * Título que verá el usuario en la pasarela de pago.
+   * @example "Cuota Socio Enero - Club de Tenis Quintero"
+   */
+  @IsString()
+  @IsNotEmpty()
+  title: string;
+
+  /**
+   * Descripción del item.
+   * @example "Pago cuota mensual socio Álvaro."
+   */
+  @IsString()
+  @IsNotEmpty()
+  description: string;
+
+  /**
+   * Precio unitario del item. Debe ser un número positivo.
+   * @example 25000
+   */
+  @IsNumber()
+  @IsPositive()
+  unit_price: number;
+
+  /**
+   * Email del socio que está realizando el pago.
+   * @example "socio@email.com"
+   */
+  @IsEmail()
+  @IsNotEmpty()
+  payerEmail: string;
+}
