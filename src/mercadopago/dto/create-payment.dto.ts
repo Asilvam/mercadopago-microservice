@@ -1,12 +1,6 @@
 // src/mercadopago/dto/create-payment.dto.ts
 
-import {
-  IsEmail,
-  IsNumber,
-  IsString,
-  IsNotEmpty,
-  IsPositive,
-} from 'class-validator';
+import { IsEmail, IsNumber, IsString, IsNotEmpty, IsPositive } from 'class-validator';
 
 export class CreatePaymentDTO {
   /**
