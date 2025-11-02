@@ -43,7 +43,7 @@ export class MercadopagoService {
           pending: successUrl, // Puedes usar la misma de éxito
         },
         // auto_return: 'approved' as const, // Regresa automáticamente al aprobarse
-        // notification_url: 'URL_DE_TU_WEBHOOK' (Se configura en el dashboard de MP)
+        notification_url: this.configService.get('NOTIFICATION_URL'),
       };
       const preference = new Preference(this.client);
       const result = await preference.create({ body: preferenceBody });
