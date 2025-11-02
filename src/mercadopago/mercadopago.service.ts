@@ -21,6 +21,7 @@ export class MercadopagoService {
   async createPaymentPreference(paymentDTO: CreatePaymentDTO) {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
+    const notificationUrl = this.configService.get<string>('NOTIFICATION_URL');
     this.logger.log('Creando preferencia de pago...');
     try {
       const preferenceBody = {
@@ -42,8 +43,7 @@ export class MercadopagoService {
           failure: failureUrl,
           pending: successUrl, // Puedes usar la misma de éxito
         },
-        // auto_return: 'approved' as const, // Regresa automáticamente al aprobarse
-        notification_url: this.configService.get('NOTIFICATION_URL'),
+        notification_url: notificationUrl,
       };
       const preference = new Preference(this.client);
       const result = await preference.create({ body: preferenceBody });
