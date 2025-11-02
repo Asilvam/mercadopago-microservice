@@ -36,6 +36,14 @@ export class CreatePaymentDTO {
   unit_price: number;
 
   /**
+   * Moneda del item.
+   * @example "CLP"
+   */
+  @IsString()
+  @IsNotEmpty()
+  currency_id: string; // Ej: 'CLP'
+
+  /**
    * Email del socio que está realizando el pago.
    * @example "socio@email.com"
    */
