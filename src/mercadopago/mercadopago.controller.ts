@@ -1,14 +1,6 @@
-import {
-  Controller,
-  Post,
-  Body,
-  ValidationPipe,
-  HttpCode,
-  Logger, // Importar HttpCode
-} from '@nestjs/common';
+import { Controller, Post, HttpCode, Logger, Query, Body, ValidationPipe } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
 import { CreatePaymentDTO } from './dto/create-payment.dto';
-import { WebhookDTO } from './dto/webhook-data.dto'; // Importar DTO de Webhook
 
 @Controller('mercadopago')
 export class MercadopagoController {
@@ -16,23 +8,18 @@ export class MercadopagoController {
   constructor(private readonly mercadopagoService: MercadopagoService) {}
 
   @Post('create-preference')
-  async createPaymentPreference(@Body(new ValidationPipe()) paymentDTO: CreatePaymentDTO) {
+  createPaymentPreference(@Body(new ValidationPipe()) paymentDTO: CreatePaymentDTO) {
     return this.mercadopagoService.createPaymentPreference(paymentDTO);
   }
 
-  @Post('webhook')
-  @HttpCode(200) // 1. Responder siempre con "200 OK"
-  handleWebhook(@Body(new ValidationPipe()) body: WebhookDTO) {
-    this.logger.log(`[Webhook] Notificación recibida. Acción: ${body.action}`);
-    // 2. Filtra por la acción que te interesa (ej. 'payment.updated')
-    if (body.action === 'payment.updated' || body.action === 'payment.created') {
-      const paymentId = body.data.id;
-      // 3. Llama al servicio SIN "await"
-      // Esto responde 200 OK inmediatamente a Mercado Pago
-      // y procesa el pago en segundo plano para evitar timeouts.
-      this.mercadopagoService.handleWebhook(paymentId);
+  @Post('webhook') // Mercado Pago usa POST aunque los datos estén en la URL
+  @HttpCode(200) // Siempre responder 200 OK rápido
+  handleLegacyWebhook(@Query('data.id') dataId: string, @Query('type') type: string) {
+    this.logger.log(`[Webhook Legado] Notificación recibida. Tipo: ${type}, ID: ${dataId}`);
+    if (type === 'payment' && dataId) {
+      this.mercadopagoService.handleWebhook(dataId);
     }
-    // 4. No retornamos nada, solo el HttpCode 200
+    // 3. Respondemos 200 OK inmediatamente, sin esperar el procesamiento
     return;
   }
 }
