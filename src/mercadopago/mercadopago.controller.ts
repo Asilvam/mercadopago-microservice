@@ -14,10 +14,11 @@ export class MercadopagoController {
 
   @Post('webhook') // Mercado Pago usa POST aunque los datos estén en la URL
   @HttpCode(200) // Siempre responder 200 OK rápido
-  handleLegacyWebhook(@Query('id') id: string, @Query('topic') topic: string) {
-    this.logger.log(`[Webhook Legado] Notificación recibida. Topico: ${topic}, ID: ${id}`);
-    if (topic === 'payment' && id) {
-      this.mercadopagoService.handleWebhook(id);
+  handleWebhook(@Query() query: Record<string, any>) {
+    this.logger.log(`[Webhook] Notificación recibida. Query: ${JSON.stringify(query)}`);
+
+    if (query.type === 'payment' && query.data?.id) {
+      this.mercadopagoService.handleWebhook(query.data?.id);
     }
     // 3. Respondemos 200 OK inmediatamente, sin esperar el procesamiento
     return;

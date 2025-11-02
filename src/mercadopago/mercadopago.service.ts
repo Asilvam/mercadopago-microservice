@@ -22,6 +22,9 @@ export class MercadopagoService {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
     const notificationUrl = this.configService.get<string>('NOTIFICATION_URL');
+    this.logger.log(successUrl);
+    this.logger.log(failureUrl);
+    this.logger.log(notificationUrl);
     this.logger.log('Creando preferencia de pago...');
     try {
       const preferenceBody = {
