@@ -1,5 +1,3 @@
-// src/mercadopago/mercadopago.module.ts
-
 import { Module } from '@nestjs/common';
 import { MercadopagoController } from './mercadopago.controller';
 import { MercadopagoService } from './mercadopago.service';
