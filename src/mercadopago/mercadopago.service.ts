@@ -37,6 +37,12 @@ export class MercadopagoService {
         ],
         payer: {
           email: paymentDTO.payerEmail,
+          name: paymentDTO.payerFirstName,
+          surname: paymentDTO.payerLastName,
+          identification: {
+            type: paymentDTO.payerIdentificationType,
+            number: paymentDTO.payerIdentificationNumber,
+          },
         },
         back_urls: {
           success: successUrl,

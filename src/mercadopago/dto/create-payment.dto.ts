@@ -42,4 +42,20 @@ export class CreatePaymentDTO {
   @IsEmail()
   @IsNotEmpty()
   payerEmail: string;
+
+  @IsString()
+  @IsNotEmpty()
+  payerFirstName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  payerLastName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  payerIdentificationType: string; // Ej: "RUT", "DNI", "CPF"
+
+  @IsString()
+  @IsNotEmpty()
+  payerIdentificationNumber: string; // Ej: "12345678-9"
 }
