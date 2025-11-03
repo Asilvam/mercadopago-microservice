@@ -17,8 +17,10 @@ export class MercadopagoController {
   handleWebhook(@Query() query: Record<string, any>) {
     this.logger.log(`[Webhook] Notificación recibida. Query: ${JSON.stringify(query)}`);
 
-    if (query.type === 'payment' && query.data?.id) {
-      this.mercadopagoService.handleWebhook(query.data?.id);
+    const type: string = query.type || 'unknown';
+    const id: string = query['data.id'] || 'unknown';
+    if (type === 'payment' && id) {
+      this.mercadopagoService.handleWebhook(id);
     }
     // 3. Respondemos 200 OK inmediatamente, sin esperar el procesamiento
     return;
