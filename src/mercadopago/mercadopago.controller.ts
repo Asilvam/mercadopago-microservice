@@ -1,6 +1,6 @@
 import { Controller, Post, HttpCode, Logger, Query, Body, ValidationPipe } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
-import { CreatePaymentDTO } from './dto/create-payment.dto';
+import { CreateMpDto } from './dto/create-mp.dto';
 
 @Controller('mercadopago')
 export class MercadopagoController {
@@ -8,7 +8,7 @@ export class MercadopagoController {
   constructor(private readonly mercadopagoService: MercadopagoService) {}
 
   @Post('create-preference')
-  createPaymentPreference(@Body(new ValidationPipe()) paymentDTO: CreatePaymentDTO) {
+  createPaymentPreference(@Body(new ValidationPipe()) paymentDTO: CreateMpDto) {
     return this.mercadopagoService.createPaymentPreference(paymentDTO);
   }
 

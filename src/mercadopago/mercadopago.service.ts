@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MercadoPagoConfig, Payment, Preference } from 'mercadopago';
-import { CreatePaymentDTO } from './dto/create-payment.dto';
+import { CreateMpDto } from './dto/create-mp.dto';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class MercadopagoService {
@@ -18,45 +19,45 @@ export class MercadopagoService {
     });
   }
 
-  async createPaymentPreference(paymentDTO: CreatePaymentDTO) {
+  async createPaymentPreference(paymentDTO: CreateMpDto) {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
+    const pendingUrl = this.configService.get<string>('MP_PENDING_URL');
     const notificationUrl = this.configService.get<string>('NOTIFICATION_URL');
-    this.logger.log(successUrl);
-    this.logger.log(failureUrl);
-    this.logger.log(notificationUrl);
-    this.logger.log('Creando preferencia de pago...');
+    // this.logger.log(successUrl);
+    // this.logger.log(failureUrl);
+    // this.logger.log(notificationUrl);
+    this.logger.log('[createPaymentPreference] Creando preferencia de pago...');
     try {
+      const { courtId, date, time, player1, amount } = paymentDTO;
       const preferenceBody = {
         items: [
           {
-            id: paymentDTO.itemId, // Ej: 'cuota-mensual'
-            title: paymentDTO.title, // Ej: 'Cuota Socio Enero'
-            description: paymentDTO.description, // Ej: 'Pago de cuota mensual socio'
+            id: uuidv4().replace(/-/g, '').substring(0, 6),
+            title: `Reserva Nocturna - Court ${courtId}`,
+            description: `Fecha: ${date} - Turno: ${time} - Jugador: ${player1}`,
             quantity: 1,
-            unit_price: paymentDTO.unit_price, // Ej: 25000
-            currency_id: 'CLP', // Moneda
+            currency_id: 'CLP',
+            unit_price: amount,
           },
         ],
-        payer: {
-          email: paymentDTO.payerEmail,
-          name: paymentDTO.payerFirstName,
-          surname: paymentDTO.payerLastName,
-          identification: {
-            type: paymentDTO.payerIdentificationType,
-            number: paymentDTO.payerIdentificationNumber,
-          },
-        },
         back_urls: {
           success: successUrl,
           failure: failureUrl,
-          pending: successUrl, // Puedes usar la misma de éxito
+          pending: pendingUrl,
         },
+        auto_return: 'approved',
         notification_url: notificationUrl,
+        metadata: {
+          courtId,
+          date,
+          time,
+          player1,
+        },
       };
       const preference = new Preference(this.client);
       const result = await preference.create({ body: preferenceBody });
-      this.logger.log('Preferencia creada exitosamente.');
+      this.logger.log('[createPaymentPreference] Preferencia creada exitosamente.');
       return {
         preferenceId: result.id,
         initPoint: result.init_point,
@@ -80,7 +81,7 @@ export class MercadopagoService {
 
       // 2. Busca la información completa del pago usando el ID
       const paymentInfo = await paymentSDK.get({ id: paymentId });
-
+      this.logger.log(`[Webhook] Info del pago: ${JSON.stringify(paymentInfo.payer)}`);
       this.logger.log(`[Webhook] Estado del pago: ${paymentInfo.status}`);
 
       // 3. Verifica si el pago está aprobado
