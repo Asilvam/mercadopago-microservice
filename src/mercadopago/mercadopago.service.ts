@@ -24,12 +24,9 @@ export class MercadopagoService {
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
     const pendingUrl = this.configService.get<string>('MP_PENDING_URL');
     const notificationUrl = this.configService.get<string>('NOTIFICATION_URL');
-    // this.logger.log(successUrl);
-    // this.logger.log(failureUrl);
-    // this.logger.log(notificationUrl);
     this.logger.log('[createPaymentPreference] Creando preferencia de pago...');
     try {
-      const { courtId, date, time, player1, amount } = paymentDTO;
+      const { courtId, date, time, player1, amount, idCourtReserve } = paymentDTO;
       const preferenceBody = {
         items: [
           {
@@ -41,6 +38,7 @@ export class MercadopagoService {
             unit_price: amount,
           },
         ],
+        external_reference: idCourtReserve, // ID único de tu sistema
         back_urls: {
           success: successUrl,
           failure: failureUrl,
@@ -76,24 +74,16 @@ export class MercadopagoService {
     this.logger.log(`[Webhook] Recibiendo Payment ID: ${paymentId}`);
 
     try {
-      // 1. Inicializa el SDK de Pagos
       const paymentSDK = new Payment(this.client);
-
-      // 2. Busca la información completa del pago usando el ID
       const paymentInfo = await paymentSDK.get({ id: paymentId });
-      this.logger.log(`[Webhook] Info del pago: ${JSON.stringify(paymentInfo.payer)}`);
+
       this.logger.log(`[Webhook] Estado del pago: ${paymentInfo.status}`);
+      this.logger.log(`[Webhook] External Reference: ${paymentInfo.external_reference}`);
 
-      // 3. Verifica si el pago está aprobado
       if (paymentInfo.status === 'approved') {
-        // --- ¡PAGO APROBADO! ---
-
-        // Aquí es donde este microservicio debe notificar
-        // al backend principal del "club de tenis quintero".
-
         this.logger.log('¡PAGO APROBADO!');
+        this.logger.log(`ID Reserva (external_reference): ${paymentInfo.external_reference}`);
         this.logger.log(`Email del pagador: ${paymentInfo.payer.email}`);
-        this.logger.log(`Descripción: ${paymentInfo.description}`);
         this.logger.log(`Monto: ${paymentInfo.transaction_amount} ${paymentInfo.currency_id}`);
 
         // TODO: Emitir evento al backend principal de CTQ
