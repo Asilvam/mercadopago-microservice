@@ -19,6 +19,25 @@ export class MercadopagoService {
     });
   }
 
+  private async updateReservationState(reservationId: string) {
+    try {
+      const mainBackendUrl = this.configService.get<string>('BACKEND_URL');
+      const response = await fetch(`${mainBackendUrl}/court-reserve/UpdateStateReserve/${reservationId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      this.logger.log(`Reserva ${reservationId} actualizada exitosamente`);
+    } catch (error) {
+      this.logger.error(`Error actualizando reserva ${reservationId}:`, error.message);
+      throw error;
+    }
+  }
+
   async createPaymentPreference(paymentDTO: CreateMpDto) {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
@@ -85,9 +104,7 @@ export class MercadopagoService {
         this.logger.log(`ID Reserva (external_reference): ${paymentInfo.external_reference}`);
         this.logger.log(`Email del pagador: ${paymentInfo.payer.email}`);
         this.logger.log(`Monto: ${paymentInfo.transaction_amount} ${paymentInfo.currency_id}`);
-
-        // TODO: Emitir evento al backend principal de CTQ
-        // this.clientMicroservice.emit('payment_approved', { ... });
+        await this.updateReservationState(paymentInfo.external_reference);
       } else {
         // El pago no fue aprobado (ej. "rejected", "pending")
         this.logger.warn(`[Webhook] Pago NO aprobado. Estado: ${paymentInfo.status}`);
