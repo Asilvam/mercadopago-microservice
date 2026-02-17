@@ -55,6 +55,7 @@ export class MercadopagoService {
             quantity: 1,
             currency_id: 'CLP',
             unit_price: amount,
+            category_id: 'services',
           },
         ],
         external_reference: idCourtReserve, // ID único de tu sistema
