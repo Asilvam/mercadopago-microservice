@@ -31,9 +31,9 @@ export class MercadopagoService {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      this.logger.log(`Reserva ${reservationId} actualizada exitosamente`);
+      this.logger.log(`[updateReservationState] Reserva ${reservationId} actualizada exitosamente`);
     } catch (error) {
-      this.logger.error(`Error actualizando reserva ${reservationId}:`, error.message);
+      this.logger.error(`[updateReservationState] Error actualizando reserva ${reservationId}:`, error.message);
       throw error;
     }
   }
@@ -53,9 +53,9 @@ export class MercadopagoService {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      this.logger.log(`Reserva ${reservationId} correo status enviado exitosamente`);
+      this.logger.log(`[emailConfirmation] Reserva ${reservationId} correo status enviado exitosamente`);
     } catch (error) {
-      this.logger.error(`Error enviando correo de estatus reserva ${reservationId}:`, error.message);
+      this.logger.error(`[emailConfirmation] Error enviando correo de estatus reserva ${reservationId}:`, error.message);
       throw error;
     }
   }
