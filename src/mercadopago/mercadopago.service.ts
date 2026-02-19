@@ -38,6 +38,28 @@ export class MercadopagoService {
     }
   }
 
+  private async emailConfirmation(reservationId: string, paymentStatus: string) {
+    try {
+      const mainBackendUrl = this.configService.get<string>('BACKEND_URL');
+      const response = await fetch(`${mainBackendUrl}/court-reserve/emailconfirmation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reservationId: reservationId,
+          paymentStatus: paymentStatus,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      this.logger.log(`Reserva ${reservationId} correo status enviado exitosamente`);
+    } catch (error) {
+      this.logger.error(`Error enviando correo de estatus reserva ${reservationId}:`, error.message);
+      throw error;
+    }
+  }
+
   async createPaymentPreference(paymentDTO: CreateMpDto) {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
@@ -110,6 +132,7 @@ export class MercadopagoService {
         // El pago no fue aprobado (ej. "rejected", "pending")
         this.logger.warn(`[Webhook] Pago NO aprobado. Estado: ${paymentInfo.status}`);
       }
+      await this.emailConfirmation(paymentInfo.external_reference, paymentInfo.status);
     } catch (error) {
       this.logger.error(`[Webhook] Error al procesar el pago ${paymentId}`, error.message);
     }
