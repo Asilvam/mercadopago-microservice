@@ -26,11 +26,9 @@ export class MercadopagoService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-
       this.logger.log(`[updateReservationState] Reserva ${reservationId} actualizada exitosamente`);
     } catch (error) {
       this.logger.error(`[updateReservationState] Error actualizando reserva ${reservationId}:`, error.message);
@@ -49,7 +47,6 @@ export class MercadopagoService {
           paymentStatus: paymentStatus,
         }),
       });
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
@@ -72,8 +69,8 @@ export class MercadopagoService {
         items: [
           {
             id: uuidv4().replace(/-/g, '').substring(0, 6),
-            title: `Reserva Nocturna - Court ${courtId}`,
-            description: `Fecha: ${date} - Turno: ${time} - Jugador: ${player1}`,
+            title: `Reserva Jugador: ${player1}`,
+            description: `Fecha: ${date} - Turno: ${time} - Jugador: ${player1} - Cancha: ${courtId}`,
             quantity: 1,
             currency_id: 'CLP',
             unit_price: amount,
