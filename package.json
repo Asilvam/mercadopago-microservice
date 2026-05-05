@@ -5,7 +5,10 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
-  "packageManager": "pnpm@10.33.3",
+  "engines": {
+    "node": "22.x",
+    "pnpm": "10.33.3"
+  },
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
