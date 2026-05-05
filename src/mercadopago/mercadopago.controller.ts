@@ -1,4 +1,4 @@
-import { Controller, Post, HttpCode, Logger, Query, Body, ValidationPipe } from '@nestjs/common';
+import { Controller, Post, HttpCode, Logger, Query, Body, ValidationPipe, Headers, Ip } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
 import { CreateMpDto } from './dto/create-mp.dto';
 
@@ -14,15 +14,57 @@ export class MercadopagoController {
 
   @Post('webhook') // Mercado Pago usa POST aunque los datos estén en la URL
   @HttpCode(200) // Siempre responder 200 OK rápido
-  handleWebhook(@Query() query: Record<string, any>) {
-    this.logger.log(`[Webhook] Notificación recibida. Query: ${JSON.stringify(query)}`);
+  handleWebhook(@Query() query: Record<string, any>, @Body() body: Record<string, any>, @Headers() headers: Record<string, string>, @Ip() ipAddress: string) {
+    const bodyDataId = body?.data?.id as string | undefined;
+    const queryDataId = query['data.id'] as string | undefined;
+    const queryId = query.id as string | undefined;
+    const paymentId = bodyDataId || queryDataId || queryId;
 
-    const type: string = query.type || 'unknown';
-    const id: string = query['data.id'] || 'unknown';
-    if (type === 'payment' && id) {
-      this.mercadopagoService.handleWebhook(id);
+    const bodyType = body?.type as string | undefined;
+    const queryType = query.type as string | undefined;
+    const queryTopic = query.topic as string | undefined;
+    const eventType = bodyType || queryType || queryTopic || 'unknown';
+
+    const bodyKeys = body && typeof body === 'object' ? Object.keys(body) : [];
+    const queryKeys = query && typeof query === 'object' ? Object.keys(query) : [];
+    const source = bodyDataId ? 'body' : queryDataId || queryId ? 'query' : 'unknown';
+
+    this.logger.log(
+      `[Webhook] Entrada resumen: ${JSON.stringify({
+        paymentId: paymentId || null,
+        eventType,
+        source,
+        hasBody: bodyKeys.length > 0,
+        bodyKeys,
+        queryKeys,
+      })}`,
+    );
+
+    this.logger.log(
+      `[Webhook] Headers: ${JSON.stringify({
+        'x-request-id': headers['x-request-id'],
+        'user-agent': headers['user-agent'],
+        'content-type': headers['content-type'],
+      })}`,
+    );
+
+    if (!paymentId) {
+      this.logger.warn('[Webhook] No se encontró paymentId en body/query.');
+      return;
     }
-    // 3. Respondemos 200 OK inmediatamente, sin esperar el procesamiento
-    return;
+
+    if (eventType === 'payment') {
+      this.mercadopagoService.handleWebhook(paymentId, eventType, {
+        ipAddress,
+        userAgent: headers['user-agent'],
+        contentType: headers['content-type'],
+        source,
+        queryKeys,
+        bodyKeys,
+      });
+      return;
+    }
+
+    this.logger.log(`[Webhook] Evento ignorado: ${eventType} (paymentId: ${paymentId}).`);
   }
 }
