@@ -28,3 +28,12 @@ export class AuditLog {
 }
 
 export const AuditLogSchema = SchemaFactory.createForClass(AuditLog);
+AuditLogSchema.index(
+  { entityType: 1, entityId: 1, action: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      entityId: { $exists: true, $ne: null },
+    },
+  },
+);

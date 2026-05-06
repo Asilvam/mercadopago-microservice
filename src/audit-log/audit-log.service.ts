@@ -40,6 +40,19 @@ export class AuditLogService {
         }
         return;
       }
+      if (payload.entityId) {
+        const existingAudit = await this.auditLogModel.exists({
+          entityType: payload.entityType,
+          entityId: payload.entityId,
+          action: payload.action,
+        });
+        if (existingAudit) {
+          this.logger.debug(
+            `[AUDIT] Duplicate ignored action=${payload.action} entityId=${payload.entityId}`,
+          );
+          return;
+        }
+      }
       const audit = new this.auditLogModel({
         entityType: payload.entityType,
         entityId: payload.entityId,
@@ -55,6 +68,10 @@ export class AuditLogService {
         `[AUDIT] Logged action=${payload.action} entityId=${payload.entityId || 'n/a'}`,
       );
     } catch (error) {
+      if (error?.code === 11000) {
+        this.logger.debug('[AUDIT] Duplicate ignored on insert');
+        return;
+      }
       this.logger.warn('[AUDIT] Error logging audit entry', error?.stack || error);
     }
   }
