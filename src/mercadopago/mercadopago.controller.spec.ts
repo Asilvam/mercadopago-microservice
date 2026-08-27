@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { MercadopagoController } from './mercadopago.controller';
 import { MercadopagoService } from './mercadopago.service';
@@ -8,262 +9,125 @@ describe('MercadopagoController', () => {
 
   const mockService = {
     createPaymentPreference: jest.fn(),
-    handleWebhook: jest.fn(),
+    acceptWebhook: jest.fn(),
+    getReliabilityMetrics: jest.fn(),
+  };
+
+  const defaultHeaders = {
+    'x-request-id': 'test-req-id',
+    'x-signature': 'ts=123,v1=hash',
+    'user-agent': 'MercadoPago/Test',
+    'content-type': 'application/json',
   };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MercadopagoController],
-      providers: [
-        { provide: MercadopagoService, useValue: mockService },
-      ],
+      providers: [{ provide: MercadopagoService, useValue: mockService }],
     }).compile();
 
-    controller = module.get<MercadopagoController>(MercadopagoController);
+    controller = module.get(MercadopagoController);
     service = module.get(MercadopagoService);
+    mockService.acceptWebhook.mockResolvedValue({
+      accepted: true,
+      duplicate: false,
+      eventKey: 'event-key',
+    });
   });
 
   afterEach(() => jest.clearAllMocks());
 
-  const defaultHeaders = {
-    'x-request-id': 'test-req-id',
-    'user-agent': 'MercadoPago/Test',
-    'content-type': 'application/json',
-  };
-  const defaultIp = '127.0.0.1';
+  it('delega la creación de preferencias', async () => {
+    const dto = {
+      courtId: 'cancha-1',
+      date: '2026-09-01',
+      time: '18:00',
+      player1: 'Juan',
+      amount: 15000,
+      idCourtReserve: 'reserve-001',
+    };
+    const expected = { preferenceId: 'pref-123', initPoint: 'https://checkout' };
+    mockService.createPaymentPreference.mockResolvedValue(expected);
 
-  describe('createPaymentPreference', () => {
-    it('debería delegar al servicio y retornar el resultado', async () => {
-      const dto = {
-        courtId: 'cancha-1',
-        date: '2026-09-01',
-        time: '18:00',
-        player1: 'Juan',
-        amount: 15000,
-        idCourtReserve: 'reserve-001',
-      };
-      const expectedResult = {
-        preferenceId: 'pref-123',
-        initPoint: 'https://mercadopago.cl/checkout/...',
-      };
+    await expect(controller.createPaymentPreference(dto)).resolves.toEqual(expected);
+    expect(service.createPaymentPreference).toHaveBeenCalledWith(dto);
+  });
 
-      mockService.createPaymentPreference.mockResolvedValue(expectedResult);
+  it('expone métricas operativas sin payloads sensibles', () => {
+    mockService.getReliabilityMetrics.mockReturnValue({
+      audit: { persisted: 5, connected: true },
+      inbox: { enqueued: 3 },
+      webhook: { signaturesAccepted: 2 },
+    } as never);
 
-      const result = await controller.createPaymentPreference(dto as any);
-
-      expect(service.createPaymentPreference).toHaveBeenCalledWith(dto);
-      expect(result).toEqual(expectedResult);
+    expect(controller.getReliabilityHealth()).toEqual({
+      status: 'ok',
+      metrics: {
+        audit: { persisted: 5, connected: true },
+        inbox: { enqueued: 3 },
+        webhook: { signaturesAccepted: 2 },
+      },
     });
   });
 
-  describe('handleWebhook — extracción de paymentId', () => {
-    it('debería extraer paymentId de body.data.id (prioridad 1)', () => {
-      const body = { data: { id: 'PAY-body-123' }, type: 'payment' };
-      const query = { 'data.id': 'PAY-query-456' };
+  it('normaliza body, firma y metadata antes de persistir el webhook', async () => {
+    const body = { data: { id: 'PAY-body-123' }, type: 'payment', id: 99 };
+    const query = { 'data.id': 'PAY-query-456', type: 'payment' };
 
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
+    await controller.handleWebhook(query, body, defaultHeaders, '127.0.0.1');
 
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        'PAY-body-123',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería extraer paymentId de query data.id (prioridad 2)', () => {
-      const body = {};
-      const query = { 'data.id': 'PAY-query-456', type: 'payment' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        'PAY-query-456',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería extraer paymentId de query.id (prioridad 3)', () => {
-      const body = {};
-      const query = { id: 'PAY-id-789', type: 'payment' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        'PAY-id-789',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería priorizar body.data.id sobre query params', () => {
-      const body = { data: { id: 'FROM-BODY' }, type: 'payment' };
-      const query = { 'data.id': 'FROM-QUERY', id: 'FROM-QUERY-ID' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        'FROM-BODY',
-        'payment',
-        expect.any(Object),
-      );
+    expect(service.acceptWebhook).toHaveBeenCalledWith({
+      paymentId: 'PAY-body-123',
+      eventType: 'payment',
+      requestId: 'test-req-id',
+      dataId: 'PAY-query-456',
+      xSignature: 'ts=123,v1=hash',
+      metadata: expect.objectContaining({
+        ipAddress: '127.0.0.1',
+        source: 'body',
+        userAgent: 'MercadoPago/Test',
+      }),
+      payload: { body, query },
     });
   });
 
-  describe('handleWebhook — extracción de eventType', () => {
-    it('debería extraer eventType de body.type (prioridad 1)', () => {
-      const body = { data: { id: '123' }, type: 'payment' };
-      const query = { type: 'merchant_order' };
+  it.each([
+    [{ data: { id: 'body-id' }, type: 'payment' }, {}, 'body-id'],
+    [{}, { 'data.id': 'query-data-id', type: 'payment' }, 'query-data-id'],
+    [{}, { id: 'query-id', topic: 'payment' }, 'query-id'],
+  ])('extrae paymentId desde los formatos soportados', async (body, query, expectedId) => {
+    await controller.handleWebhook(query, body, defaultHeaders, '127.0.0.1');
 
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería extraer eventType de query.type (prioridad 2)', () => {
-      const body = { data: { id: '123' } };
-      const query = { type: 'payment' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería extraer eventType de query.topic (prioridad 3)', () => {
-      const body = { data: { id: '123' } };
-      const query = { topic: 'payment' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.any(Object),
-      );
-    });
-
-    it('debería usar "unknown" si no hay eventType', () => {
-      const body = { data: { id: '123' } };
-      const query = {};
-
-      // eventType será 'unknown', que no es 'payment', así que no llama a handleWebhook
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
+    expect(service.acceptWebhook).toHaveBeenCalledWith(expect.objectContaining({ paymentId: expectedId, eventType: 'payment' }));
   });
 
-  describe('handleWebhook — sin paymentId', () => {
-    it('debería NO llamar al servicio si no hay paymentId', () => {
-      const body = {};
-      const query = {};
+  it('espera la persistencia antes de completar la respuesta', async () => {
+    let persist: (value: { accepted: true; duplicate: boolean; eventKey: string }) => void;
+    mockService.acceptWebhook.mockReturnValue(
+      new Promise((resolve) => {
+        persist = resolve;
+      }),
+    );
 
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
+    let completed = false;
+    const response = controller.handleWebhook({}, { data: { id: '123' }, type: 'payment' }, defaultHeaders, '127.0.0.1').then(() => {
+      completed = true;
     });
 
-    it('debería NO llamar al servicio con body vacío y query vacío', () => {
-      controller.handleWebhook({}, {}, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
-
-    it('debería NO llamar al servicio con body null', () => {
-      controller.handleWebhook({}, null as any, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    persist!({ accepted: true, duplicate: false, eventKey: 'event-key' });
+    await response;
+    expect(completed).toBe(true);
   });
 
-  describe('handleWebhook — filtro de eventos', () => {
-    it('debería llamar a handleWebhook solo para eventos de tipo "payment"', () => {
-      const body = { data: { id: '123' }, type: 'payment' };
-
-      controller.handleWebhook({}, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalled();
-    });
-
-    it('debería ignorar eventos de tipo "merchant_order"', () => {
-      const body = { data: { id: '123' }, type: 'merchant_order' };
-
-      controller.handleWebhook({}, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
-
-    it('debería ignorar eventos de tipo "plan"', () => {
-      const body = { data: { id: '123' }, type: 'plan' };
-
-      controller.handleWebhook({}, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
-
-    it('debería ignorar eventos de tipo "subscription"', () => {
-      const body = { data: { id: '123' }, type: 'subscription' };
-
-      controller.handleWebhook({}, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).not.toHaveBeenCalled();
-    });
+  it('rechaza una notificación sin paymentId', async () => {
+    await expect(controller.handleWebhook({}, {}, defaultHeaders, '127.0.0.1')).rejects.toBeInstanceOf(BadRequestException);
+    expect(service.acceptWebhook).not.toHaveBeenCalled();
   });
 
-  describe('handleWebhook — metadata del request', () => {
-    it('debería pasar ipAddress, userAgent, contentType y source al servicio', () => {
-      const body = { data: { id: '123' }, type: 'payment' };
-      const headers = {
-        'x-request-id': 'req-abc',
-        'user-agent': 'MercadoPago/Webhook',
-        'content-type': 'application/json',
-      };
-
-      controller.handleWebhook({}, body, headers, '192.168.1.1');
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.objectContaining({
-          ipAddress: '192.168.1.1',
-          userAgent: 'MercadoPago/Webhook',
-          contentType: 'application/json',
-          source: 'body',
-        }),
-      );
-    });
-
-    it('debería indicar source "body" cuando paymentId viene del body', () => {
-      const body = { data: { id: '123' }, type: 'payment' };
-
-      controller.handleWebhook({}, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.objectContaining({ source: 'body' }),
-      );
-    });
-
-    it('debería indicar source "query" cuando paymentId viene del query', () => {
-      const body = {};
-      const query = { 'data.id': '123', type: 'payment' };
-
-      controller.handleWebhook(query, body, defaultHeaders, defaultIp);
-
-      expect(service.handleWebhook).toHaveBeenCalledWith(
-        '123',
-        'payment',
-        expect.objectContaining({ source: 'query' }),
-      );
-    });
+  it('acepta pero ignora eventos que no son payment', async () => {
+    await expect(controller.handleWebhook({}, { data: { id: '123' }, type: 'merchant_order' }, defaultHeaders, '127.0.0.1')).resolves.toEqual({ accepted: true, ignored: true });
+    expect(service.acceptWebhook).not.toHaveBeenCalled();
   });
 });

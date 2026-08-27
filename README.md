@@ -100,7 +100,11 @@ Recibe notificaciones de pago de MercadoPago. Acepta el `paymentId` tanto en el 
 
 - Si el pago es **aprobado**: actualiza la reserva y envía correo de confirmación.
 - Si el pago es **rechazado/pendiente**: registra el estado y envía correo con el status.
-- Siempre responde `200 OK` inmediatamente.
+- Responde `200 OK` después de persistir el inbox. Firmas inválidas reciben `401`; si MongoDB no está disponible se devuelve `503` para permitir reintento.
+
+### `GET /mercadopago/health`
+
+Expone contadores operativos en memoria para persistencia, duplicados, reintentos, fallos y efectos omitidos. No incluye payloads ni credenciales.
 
 ## Variables de Entorno
 
@@ -109,6 +113,8 @@ Crea un archivo `.env` en la raíz del proyecto:
 ```env
 # MercadoPago
 MP_ACCESS_TOKEN=APP_USR-...           # Access token de MercadoPago (requerido)
+MP_WEBHOOK_SECRET=...                 # Firma secreta de Webhooks (requerida)
+MP_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS=300
 
 # URLs de redirección post-pago
 MP_SUCCESS_URL=https://tuapp.com/pago/exito
@@ -123,6 +129,16 @@ BACKEND_URL=https://tu-backend.com
 
 # MongoDB
 MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/db
+
+# Persistencia y reintentos
+AUDIT_LOG_RETENTION_DAYS=365
+WEBHOOK_INBOX_RETENTION_DAYS=30
+WEBHOOK_EFFECT_RETENTION_DAYS=365
+WEBHOOK_MAX_ATTEMPTS=6
+WEBHOOK_RETRY_BASE_MS=5000
+WEBHOOK_RETRY_MAX_MS=900000
+WEBHOOK_LOCK_TIMEOUT_MS=120000
+WEBHOOK_POLL_INTERVAL_MS=5000
 
 # Puerto (opcional, default: 3000)
 PORT=3000
@@ -175,9 +191,19 @@ npm run test:e2e
 npm run test:cov
 ```
 
-## Auditoría (Audit Logs)
+## Persistencia de webhooks y auditoría
 
-Cada acción relevante se registra en la colección `mp_logs` de MongoDB con deduplicación automática por `(entityType, entityId, action)`.
+El endpoint valida `x-signature` antes de aceptar una notificación y guarda el webhook en MongoDB antes de responder. Un worker interno reclama los eventos mediante una operación atómica y reintenta fallos con backoff exponencial.
+
+Se utilizan tres colecciones:
+
+| Colección | Responsabilidad |
+|---|---|
+| `mp_webhook_inbox` | Recepción durable y estado `PENDING/PROCESSING/PROCESSED/FAILED` |
+| `mp_webhook_effects` | Idempotencia de actualización de reserva y envío de correo |
+| `mp_logs` | Auditoría append-only con correlación y retención TTL |
+
+Los callbacks al backend incluyen `Idempotency-Key`. El backend receptor también debe respetar esa cabecera para cerrar la pequeña ventana distribuida entre completar el callback y confirmar el efecto en MongoDB.
 
 ### Acciones registradas
 
@@ -195,10 +221,11 @@ Cada acción relevante se registra en la colección `mp_logs` de MongoDB con ded
 
 ### Tolerancia a fallos
 
-El servicio de auditoría es **resiliente a caídas de MongoDB**:
-- Si MongoDB se desconecta, los audit logs se deshabilitan silenciosamente (con un warning inicial).
-- La reconexión se intenta automáticamente cada 60 segundos.
-- El microservicio sigue funcionando normalmente sin MongoDB.
+- Si MongoDB no está disponible, el webhook no se confirma como persistido y se devuelve un error temporal.
+- Los errores de procesamiento se reintentan con backoff hasta `WEBHOOK_MAX_ATTEMPTS`.
+- Los locks abandonados se recuperan después de `WEBHOOK_LOCK_TIMEOUT_MS`.
+- Los audit logs no se deduplican: cada intento genera un evento con `eventId` propio.
+- Payloads y metadata se limitan, enmascaran correos y eliminan tokens, firmas, cookies y credenciales.
 
 ## Deployment
 

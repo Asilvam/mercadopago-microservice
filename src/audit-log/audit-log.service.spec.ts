@@ -1,199 +1,139 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { ServiceUnavailableException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { getModelToken } from '@nestjs/mongoose';
+import { Test, TestingModule } from '@nestjs/testing';
 import { AuditLogService } from './audit-log.service';
 
 describe('AuditLogService', () => {
   let service: AuditLogService;
-  let mockModel: any;
-
-  const createMockModel = () => {
-    const saveFn = jest.fn().mockResolvedValue(undefined);
-    const constructorFn: any = jest.fn().mockImplementation((data) => ({
-      ...data,
-      save: saveFn,
-    }));
-    constructorFn.exists = jest.fn().mockResolvedValue(null);
-    constructorFn._saveFn = saveFn;
-    return constructorFn;
-  };
+  let mockModel: jest.Mock;
+  let saveFn: jest.Mock;
+  let dropIndex: jest.Mock;
 
   beforeEach(async () => {
-    mockModel = createMockModel();
+    saveFn = jest.fn().mockResolvedValue(undefined);
+    dropIndex = jest.fn().mockResolvedValue(undefined);
+    mockModel = jest.fn().mockImplementation((data) => ({ ...data, save: saveFn }));
+    Object.assign(mockModel, { collection: { dropIndex } });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuditLogService,
         { provide: getModelToken('AuditLog'), useValue: mockModel },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn((key: string) => (key === 'AUDIT_LOG_RETENTION_DAYS' ? 90 : undefined)) },
+        },
       ],
     }).compile();
 
-    service = module.get<AuditLogService>(AuditLogService);
+    service = module.get(AuditLogService);
   });
 
   afterEach(() => jest.clearAllMocks());
 
-  describe('createAuditLog', () => {
-    const basePayload = {
-      entityType: 'PAYMENT',
-      entityId: 'pay-123',
-      action: 'WEBHOOK_RECEIVED',
-      description: 'Test audit log',
-    };
+  const payload = {
+    entityType: 'PAYMENT',
+    entityId: 'pay-123',
+    action: 'WEBHOOK_RECEIVED',
+    description: 'Webhook recibido',
+  };
 
-    it('debería crear un audit log cuando MongoDB está conectado', async () => {
-      await service.createAuditLog(basePayload);
+  it('retira el índice único anterior durante la migración append-only', async () => {
+    await service.onModuleInit();
 
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({
-          entityType: 'PAYMENT',
-          entityId: 'pay-123',
-          action: 'WEBHOOK_RECEIVED',
-          description: 'Test audit log',
-          performedBy: 'SYSTEM',
-        }),
-      );
-      expect(mockModel._saveFn).toHaveBeenCalled();
-    });
-
-    it('debería usar "SYSTEM" como performedBy por defecto', async () => {
-      await service.createAuditLog(basePayload);
-
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({ performedBy: 'SYSTEM' }),
-      );
-    });
-
-    it('debería usar el performedBy proporcionado', async () => {
-      await service.createAuditLog({ ...basePayload, performedBy: 'user-456' });
-
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({ performedBy: 'user-456' }),
-      );
-    });
-
-    it('debería incluir timestamp', async () => {
-      await service.createAuditLog(basePayload);
-
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({
-          timestamp: expect.any(Date),
-        }),
-      );
-    });
-
-    it('debería incluir metadata cuando se proporciona', async () => {
-      const metadata = { source: 'body', eventType: 'payment' };
-      await service.createAuditLog({ ...basePayload, metadata });
-
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata }),
-      );
-    });
-
-    it('debería usar metadata vacío cuando no se proporciona', async () => {
-      await service.createAuditLog(basePayload);
-
-      expect(mockModel).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: {} }),
-      );
-    });
+    expect(dropIndex).toHaveBeenCalledWith('entityType_1_entityId_1_action_1');
   });
 
-  describe('deduplicación', () => {
-    const payload = {
-      entityType: 'PAYMENT',
-      entityId: 'pay-123',
-      action: 'WEBHOOK_RECEIVED',
-      description: 'Duplicado',
-    };
+  it('tolera una instalación nueva donde el índice anterior no existe', async () => {
+    dropIndex.mockRejectedValue({ code: 27, codeName: 'IndexNotFound' });
 
-    it('debería ignorar si ya existe un audit log con mismo entityType+entityId+action', async () => {
-      mockModel.exists.mockResolvedValue({ _id: 'existing-id' });
-
-      await service.createAuditLog(payload);
-
-      expect(mockModel.exists).toHaveBeenCalledWith({
-        entityType: 'PAYMENT',
-        entityId: 'pay-123',
-        action: 'WEBHOOK_RECEIVED',
-      });
-      expect(mockModel._saveFn).not.toHaveBeenCalled();
-    });
-
-    it('debería crear si no existe un audit log previo', async () => {
-      mockModel.exists.mockResolvedValue(null);
-
-      await service.createAuditLog(payload);
-
-      expect(mockModel._saveFn).toHaveBeenCalled();
-    });
-
-    it('debería saltar verificación de duplicados si entityId es undefined', async () => {
-      const payloadSinId = {
-        entityType: 'SYSTEM',
-        action: 'STARTUP',
-        description: 'Sin entityId',
-      };
-
-      await service.createAuditLog(payloadSinId);
-
-      expect(mockModel.exists).not.toHaveBeenCalled();
-      expect(mockModel._saveFn).toHaveBeenCalled();
-    });
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
   });
 
-  describe('tolerancia a fallos — MongoDB desconectado', () => {
-    const payload = {
-      entityType: 'PAYMENT',
-      entityId: 'pay-123',
-      action: 'WEBHOOK_RECEIVED',
-      description: 'Test',
-    };
+  it('persiste eventos append-only con eventId y retención', async () => {
+    await service.createAuditLog(payload);
+    await service.createAuditLog(payload);
 
-    it('debería NO crear audit log cuando MongoDB está desconectado', async () => {
-      service.setMongoConnectionStatus(false);
-
-      await service.createAuditLog(payload);
-
-      expect(mockModel).not.toHaveBeenCalled();
-      expect(mockModel._saveFn).not.toHaveBeenCalled();
-    });
-
-    it('debería reanudar audit logs cuando MongoDB se reconecta', async () => {
-      service.setMongoConnectionStatus(false);
-      await service.createAuditLog(payload);
-      expect(mockModel._saveFn).not.toHaveBeenCalled();
-
-      service.setMongoConnectionStatus(true);
-      await service.createAuditLog(payload);
-      expect(mockModel._saveFn).toHaveBeenCalled();
-    });
-
-    it('debería NO lanzar excepción cuando MongoDB está desconectado', async () => {
-      service.setMongoConnectionStatus(false);
-
-      await expect(service.createAuditLog(payload)).resolves.toBeUndefined();
-    });
+    expect(mockModel).toHaveBeenCalledTimes(2);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+    const first = mockModel.mock.calls[0][0];
+    const second = mockModel.mock.calls[1][0];
+    expect(first).toEqual(
+      expect.objectContaining({
+        eventId: expect.any(String),
+        performedBy: 'SYSTEM',
+        timestamp: expect.any(Date),
+        expiresAt: expect.any(Date),
+      }),
+    );
+    expect(first.eventId).not.toBe(second.eventId);
   });
 
-  describe('manejo de errores', () => {
-    const payload = {
-      entityType: 'PAYMENT',
-      entityId: 'pay-123',
-      action: 'WEBHOOK_RECEIVED',
-      description: 'Test',
-    };
-
-    it('debería ignorar silenciosamente errores de duplicado (code 11000)', async () => {
-      mockModel._saveFn.mockRejectedValue({ code: 11000 });
-
-      await expect(service.createAuditLog(payload)).resolves.toBeUndefined();
+  it('conserva correlación y actor explícitos', async () => {
+    await service.createAuditLog({
+      ...payload,
+      performedBy: 'worker',
+      correlationId: 'event-key',
+      requestId: 'request-id',
+      source: 'body',
+      status: 'approved',
     });
 
-    it('debería NO lanzar excepción en errores genéricos de MongoDB', async () => {
-      mockModel._saveFn.mockRejectedValue(new Error('Connection timeout'));
+    expect(mockModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        performedBy: 'worker',
+        correlationId: 'event-key',
+        requestId: 'request-id',
+        source: 'body',
+        status: 'approved',
+      }),
+    );
+  });
 
-      await expect(service.createAuditLog(payload)).resolves.toBeUndefined();
+  it('redacta secretos y enmascara correos en metadata', async () => {
+    await service.createAuditLog({
+      ...payload,
+      metadata: {
+        accessToken: 'secret-value',
+        nested: { authorization: 'Bearer secret' },
+        email: 'buyer@example.com',
+      },
     });
+
+    expect(mockModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: {
+          accessToken: '[REDACTED]',
+          nested: { authorization: '[REDACTED]' },
+          email: 'b***@example.com',
+        },
+      }),
+    );
+    expect(service.getMetrics().redactedFields).toBe(2);
+  });
+
+  it('propaga el fallo cuando Mongo está desconectado para permitir reintento', async () => {
+    service.setMongoConnectionStatus(false);
+
+    await expect(service.createAuditLog(payload)).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(saveFn).not.toHaveBeenCalled();
+    expect(service.getMetrics().rejectedWhileDisconnected).toBe(1);
+  });
+
+  it('reanuda la persistencia después de reconectar', async () => {
+    service.setMongoConnectionStatus(false);
+    await expect(service.createAuditLog(payload)).rejects.toBeDefined();
+
+    service.setMongoConnectionStatus(true);
+    await expect(service.createAuditLog(payload)).resolves.toBeUndefined();
+    expect(saveFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('propaga errores de escritura y actualiza métricas', async () => {
+    saveFn.mockRejectedValue(new Error('Connection timeout'));
+
+    await expect(service.createAuditLog(payload)).rejects.toThrow('Connection timeout');
+    expect(service.getMetrics().failed).toBe(1);
   });
 });

@@ -1,10 +1,13 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { HydratedDocument } from 'mongoose';
 
-export type AuditLogDocument = AuditLog & Document;
+export type AuditLogDocument = HydratedDocument<AuditLog>;
 
 @Schema({ collection: 'mp_logs', timestamps: true })
 export class AuditLog {
+  @Prop({ required: true, unique: true, index: true })
+  eventId: string;
+
   @Prop({ required: true })
   entityType: string;
 
@@ -24,16 +27,25 @@ export class AuditLog {
   timestamp: Date;
 
   @Prop({ type: Object, required: false })
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
+
+  @Prop({ required: false, index: true })
+  correlationId?: string;
+
+  @Prop({ required: false, index: true })
+  requestId?: string;
+
+  @Prop({ required: false })
+  source?: string;
+
+  @Prop({ required: false })
+  status?: string;
+
+  @Prop({ required: false })
+  expiresAt?: Date;
 }
 
 export const AuditLogSchema = SchemaFactory.createForClass(AuditLog);
-AuditLogSchema.index(
-  { entityType: 1, entityId: 1, action: 1 },
-  {
-    unique: true,
-    partialFilterExpression: {
-      entityId: { $exists: true, $ne: null },
-    },
-  },
-);
+AuditLogSchema.index({ entityType: 1, entityId: 1, timestamp: -1 });
+AuditLogSchema.index({ action: 1, timestamp: -1 });
+AuditLogSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

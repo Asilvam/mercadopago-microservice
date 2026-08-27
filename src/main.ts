@@ -39,7 +39,7 @@ async function bootstrap() {
     try {
       await connection.openUri(mongoUri);
       updateStatus(true);
-    } catch (error) {
+    } catch {
       auditLogService.setMongoConnectionStatus(false);
     }
   }, 60000);

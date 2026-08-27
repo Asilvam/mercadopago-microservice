@@ -1,4 +1,4 @@
-import { Controller, Post, HttpCode, Logger, Query, Body, ValidationPipe, Headers, Ip } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logger, Post, Query, ValidationPipe } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
 import { CreateMpDto } from './dto/create-mp.dto';
 
@@ -12,10 +12,25 @@ export class MercadopagoController {
     return this.mercadopagoService.createPaymentPreference(paymentDTO);
   }
 
+  @Get('health')
+  getReliabilityHealth() {
+    const metrics = this.mercadopagoService.getReliabilityMetrics();
+    return {
+      status: metrics.audit.connected ? 'ok' : 'degraded',
+      metrics,
+    };
+  }
+
   @Post('webhook') // Mercado Pago usa POST aunque los datos estén en la URL
-  @HttpCode(200) // Siempre responder 200 OK rápido
-  handleWebhook(@Query() query: Record<string, any>, @Body() body: Record<string, any>, @Headers() headers: Record<string, string>, @Ip() ipAddress: string) {
-    const bodyDataId = body?.data?.id as string | undefined;
+  @HttpCode(200) // Responde 200 solo después de persistir la entrada del inbox
+  async handleWebhook(
+    @Query() query: Record<string, unknown>,
+    @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Ip() ipAddress: string,
+  ) {
+    const bodyData = body?.data as Record<string, unknown> | undefined;
+    const bodyDataId = bodyData?.id as string | undefined;
     const queryDataId = query['data.id'] as string | undefined;
     const queryId = query.id as string | undefined;
     const paymentId = bodyDataId || queryDataId || queryId;
@@ -50,21 +65,33 @@ export class MercadopagoController {
 
     if (!paymentId) {
       this.logger.warn('[Webhook] No se encontró paymentId en body/query.');
-      return;
+      throw new BadRequestException('paymentId is required');
     }
 
     if (eventType === 'payment') {
-      this.mercadopagoService.handleWebhook(paymentId, eventType, {
-        ipAddress,
-        userAgent: headers['user-agent'],
-        contentType: headers['content-type'],
-        source,
-        queryKeys,
-        bodyKeys,
+      return this.mercadopagoService.acceptWebhook({
+        paymentId,
+        eventType,
+        requestId: this.headerValue(headers['x-request-id']),
+        dataId: queryDataId || queryId || bodyDataId,
+        xSignature: headers['x-signature'],
+        metadata: {
+          ipAddress,
+          userAgent: this.headerValue(headers['user-agent']),
+          contentType: this.headerValue(headers['content-type']),
+          source,
+          queryKeys,
+          bodyKeys,
+        },
+        payload: { body, query },
       });
-      return;
     }
 
     this.logger.log(`[Webhook] Evento ignorado: ${eventType} (paymentId: ${paymentId}).`);
+    return { accepted: true, ignored: true };
+  }
+
+  private headerValue(value: string | string[] | undefined): string | undefined {
+    return Array.isArray(value) ? value[0] : value;
   }
 }
