@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { MercadopagoController } from './mercadopago.controller';
 import { MercadopagoService } from './mercadopago.service';
+import { ConfigService } from '@nestjs/config';
 
 describe('MercadopagoController', () => {
   let controller: MercadopagoController;
@@ -23,7 +24,10 @@ describe('MercadopagoController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [MercadopagoController],
-      providers: [{ provide: MercadopagoService, useValue: mockService }],
+      providers: [
+        { provide: MercadopagoService, useValue: mockService },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('internal-secret') } },
+      ],
     }).compile();
 
     controller = module.get(MercadopagoController);

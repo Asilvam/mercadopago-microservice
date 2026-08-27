@@ -178,6 +178,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-api-key': this.internalApiKey(),
           ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         },
       });
@@ -215,6 +216,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-api-key': this.internalApiKey(),
           ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         },
         body: JSON.stringify({
@@ -411,5 +413,13 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private internalApiKey(): string {
+    const apiKey = this.configService.get<string>('INTERNAL_API_KEY');
+    if (!apiKey) {
+      throw new Error('INTERNAL_API_KEY is not configured');
+    }
+    return apiKey;
   }
 }

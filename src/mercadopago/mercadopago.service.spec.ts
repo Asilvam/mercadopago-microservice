@@ -55,6 +55,7 @@ describe('MercadopagoService', () => {
     MP_PENDING_URL: 'http://localhost/pending',
     NOTIFICATION_URL: 'http://localhost/webhook',
     MP_WEBHOOK_SECRET: 'webhook-secret',
+    INTERNAL_API_KEY: 'internal-secret',
   };
 
   const mockConfigService = {
@@ -299,6 +300,10 @@ describe('MercadopagoService', () => {
         await service.handleWebhook(paymentId, eventType, requestMetadata);
 
         expect(mockFetch).toHaveBeenCalledWith('http://localhost:4000/court-reserve/UpdateStateReserve/reserve-001', expect.objectContaining({ method: 'POST' }));
+        expect(mockFetch).toHaveBeenCalledWith(
+          'http://localhost:4000/court-reserve/UpdateStateReserve/reserve-001',
+          expect.objectContaining({ headers: expect.objectContaining({ 'x-api-key': 'internal-secret' }) }),
+        );
       });
 
       it('debería registrar RESERVATION_UPDATE_OK al actualizar exitosamente', async () => {

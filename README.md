@@ -114,6 +114,7 @@ Crea un archivo `.env` en la raíz del proyecto:
 # MercadoPago
 MP_ACCESS_TOKEN=APP_USR-...           # Access token de MercadoPago (requerido)
 MP_WEBHOOK_SECRET=...                 # Firma secreta de Webhooks (requerida)
+INTERNAL_API_KEY=...                  # Clave compartida con tennis-app-backend (requerida)
 MP_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS=300
 
 # URLs de redirección post-pago
