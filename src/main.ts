@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
@@ -8,41 +8,49 @@ import { AuditLogService } from './audit-log/audit-log.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const logger = new Logger('Mongo');
+  const logger = new Logger('Bootstrap');
   const auditLogService = app.get(AuditLogService);
   const configService = app.get(ConfigService);
   const connection = app.get<Connection>(getConnectionToken());
-  const mongoUri = configService.get<string>('MONGODB_URI');
 
+  // ── Global Pipes ──────────────────────────────────────
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
+
+  // ── CORS ──────────────────────────────────────────────
+  const frontendUrl = configService.get<string>('FRONTEND_URL');
+  app.enableCors({
+    origin: frontendUrl || '*',
+  });
+
+  // ── MongoDB connection status tracking ────────────────
   const updateStatus = (isConnected: boolean) => {
     auditLogService.setMongoConnectionStatus(isConnected);
     if (isConnected) {
-      logger.log('Conexion restaurada. Audit logs habilitados.');
+      logger.log('MongoDB: conexión establecida. Audit logs habilitados.');
     }
   };
 
   connection.on('connected', () => updateStatus(true));
   connection.on('disconnected', () => {
     auditLogService.setMongoConnectionStatus(false);
-    logger.warn('Conexion perdida. Reintentando en background...');
+    logger.warn('MongoDB: conexión perdida. Mongoose reintentará automáticamente.');
   });
   connection.on('error', (error) => {
     auditLogService.setMongoConnectionStatus(false);
-    logger.error('Error de conexion', error);
+    logger.error('MongoDB: error de conexión', error);
   });
 
   updateStatus(connection.readyState === 1);
 
-  setInterval(async () => {
-    if (connection.readyState === 1) return;
-    if (!mongoUri) return;
-    try {
-      await connection.openUri(mongoUri);
-      updateStatus(true);
-    } catch {
-      auditLogService.setMongoConnectionStatus(false);
-    }
-  }, 60000);
-  await app.listen(process.env.PORT ?? 3000);
+  // ── Start server ──────────────────────────────────────
+  const port = configService.get<number>('PORT') ?? 3000;
+  await app.listen(port);
+  logger.log(`Microservicio MercadoPago escuchando en puerto ${port}`);
 }
 bootstrap();

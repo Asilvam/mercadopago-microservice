@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { MercadopagoService } from './mercadopago.service';
@@ -225,10 +226,13 @@ describe('MercadopagoService', () => {
       });
     });
 
-    it('debería lanzar error si el SDK de MercadoPago falla', async () => {
+    it('debería lanzar ServiceUnavailableException si el SDK de MercadoPago falla', async () => {
       mockPreferenceCreate.mockRejectedValue(new Error('Invalid access token'));
 
-      await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow('Invalid access token');
+      await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow(ServiceUnavailableException);
+      await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow(
+        'No se pudo crear la preferencia de pago. Intente nuevamente.',
+      );
     });
   });
 

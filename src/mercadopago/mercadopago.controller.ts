@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logger, Post, Query, UseGuards, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logger, Post, Query, UseGuards } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
 import { CreateMpDto } from './dto/create-mp.dto';
 import { InternalApiKeyGuard } from '../common/guards/internal-api-key.guard';
@@ -10,7 +10,7 @@ export class MercadopagoController {
 
   @Post('create-preference')
   @UseGuards(InternalApiKeyGuard)
-  createPaymentPreference(@Body(new ValidationPipe()) paymentDTO: CreateMpDto) {
+  createPaymentPreference(@Body() paymentDTO: CreateMpDto) {
     return this.mercadopagoService.createPaymentPreference(paymentDTO);
   }
 

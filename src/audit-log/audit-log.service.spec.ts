@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { getModelToken } from '@nestjs/mongoose';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuditLogService } from './audit-log.service';
+import { AuditLog } from './audit-log.entity';
 
 describe('AuditLogService', () => {
   let service: AuditLogService;
@@ -19,7 +20,7 @@ describe('AuditLogService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuditLogService,
-        { provide: getModelToken('AuditLog'), useValue: mockModel },
+        { provide: getModelToken(AuditLog.name), useValue: mockModel },
         {
           provide: ConfigService,
           useValue: { get: jest.fn((key: string) => (key === 'AUDIT_LOG_RETENTION_DAYS' ? 90 : undefined)) },

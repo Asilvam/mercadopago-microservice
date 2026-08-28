@@ -299,7 +299,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       };
     } catch (error) {
       this.logger.error('Error al crear la preferencia', error.message);
-      throw new Error(error.message);
+      throw new ServiceUnavailableException('No se pudo crear la preferencia de pago. Intente nuevamente.');
     }
   }
 

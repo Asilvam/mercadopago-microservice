@@ -43,7 +43,7 @@ export class AuditLogService implements OnModuleInit {
   };
 
   constructor(
-    @InjectModel('AuditLog')
+    @InjectModel(AuditLog.name)
     private readonly auditLogModel: Model<AuditLog>,
     @Optional() private readonly configService?: ConfigService,
   ) {}

@@ -1,13 +1,13 @@
 {
   "name": "mercadopago-microservice",
   "version": "0.0.2",
-  "description": "",
-  "author": "",
+  "description": "Microservicio NestJS para gestión de pagos de reservas de canchas deportivas con MercadoPago",
+  "author": "Alejandro Silva",
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": "26.x",
-    "pnpm": "11.x"
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
   },
   "scripts": {
     "build": "nest build",
@@ -31,6 +31,7 @@
     "@nestjs/platform-express": "^10.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "joi": "^18.2.5",
     "mercadopago": "^2.9.0",
     "mongoose": "^9.6.1",
     "reflect-metadata": "^0.2.0",
