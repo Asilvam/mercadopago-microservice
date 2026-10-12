@@ -1,99 +1,213 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 💳 MercadoPago Microservice
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Microservicio construido con [NestJS](https://nestjs.com/) para gestionar pagos de reservas de canchas deportivas mediante [MercadoPago](https://www.mercadopago.cl/developers). Incluye recepción de webhooks, actualización automática del estado de reservas, envío de correos de confirmación y auditoría completa en MongoDB.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Stack Tecnológico
 
-## Description
+| Tecnología | Uso |
+|---|---|
+| **NestJS** | Framework backend (Node.js + TypeScript) |
+| **MercadoPago SDK v2** | Creación de preferencias de pago y consulta de pagos |
+| **MongoDB + Mongoose** | Persistencia de audit logs |
+| **class-validator** | Validación de DTOs |
+| **uuid** | Generación de IDs únicos para ítems de pago |
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Arquitectura
 
-## Project setup
-
-```bash
-$ pnpm install
+```
+src/
+├── main.ts                         # Bootstrap + manejo de conexión MongoDB
+├── app.module.ts                   # Módulo raíz (ConfigModule, MongooseModule)
+├── app.controller.ts               # Health check (/)
+├── app.service.ts                  # Servicio base
+├── mercadopago/
+│   ├── mercadopago.module.ts       # Módulo de MercadoPago
+│   ├── mercadopago.controller.ts   # Endpoints: create-preference, webhook
+│   ├── mercadopago.service.ts      # Lógica de negocio (pagos, webhook, reservas)
+│   └── dto/
+│       ├── create-mp.dto.ts        # DTO para crear preferencia de pago
+│       ├── create-payment.dto.ts   # DTO de pago genérico
+│       └── webhook-data.dto.ts     # DTO de notificación webhook
+└── audit-log/
+    ├── audit-log.module.ts         # Módulo de auditoría
+    ├── audit-log.service.ts        # Servicio de logging (con dedup y tolerancia a fallos)
+    ├── audit-log.entity.ts         # Schema Mongoose (colección: mp_logs)
+    └── audit-log.constants.ts      # Acciones de auditoría
 ```
 
-## Compile and run the project
+## Flujo de Pago
 
-```bash
-# development
-$ pnpm run start
+```mermaid
+sequenceDiagram
+    participant Frontend
+    participant Microservice
+    participant MercadoPago
+    participant Backend
+    participant MongoDB
 
-# watch mode
-$ pnpm run start:dev
+    Frontend->>Microservice: POST /mercadopago/create-preference
+    Microservice->>MercadoPago: Crear preferencia de pago
+    MercadoPago-->>Microservice: { preferenceId, initPoint }
+    Microservice-->>Frontend: URL de pago (initPoint)
 
-# production mode
-$ pnpm run start:prod
+    Frontend->>MercadoPago: Usuario paga
+
+    MercadoPago->>Microservice: POST /mercadopago/webhook (notificación)
+    Microservice->>MongoDB: Registrar audit log (WEBHOOK_RECEIVED)
+    Microservice->>MercadoPago: Consultar estado del pago
+    MercadoPago-->>Microservice: paymentInfo (status, external_reference)
+
+    alt Pago aprobado
+        Microservice->>Backend: POST /court-reserve/UpdateStateReserve/{id}
+        Microservice->>MongoDB: Audit log (RESERVATION_UPDATE_OK)
+    end
+
+    Microservice->>Backend: POST /court-reserve/emailconfirmation
+    Microservice->>MongoDB: Audit log (EMAIL_CONFIRMATION_OK)
 ```
 
-## Run tests
+## Endpoints
+
+### `POST /mercadopago/create-preference`
+
+Crea una preferencia de pago en MercadoPago para una reserva de cancha.
+
+**Request Body:**
+
+```json
+{
+  "courtId": "cancha-1",
+  "date": "2026-09-01",
+  "time": "18:00",
+  "player1": "Juan Pérez",
+  "amount": 15000,
+  "idCourtReserve": "reserve-abc-123"
+}
+```
+
+**Response:**
+
+```json
+{
+  "preferenceId": "123456789-...",
+  "initPoint": "https://www.mercadopago.cl/checkout/v1/redirect?pref_id=..."
+}
+```
+
+### `POST /mercadopago/webhook`
+
+Recibe notificaciones de pago de MercadoPago. Acepta el `paymentId` tanto en el body (`data.id`) como en query params (`data.id` o `id`).
+
+- Si el pago es **aprobado**: actualiza la reserva y envía correo de confirmación.
+- Si el pago es **rechazado/pendiente**: registra el estado y envía correo con el status.
+- Siempre responde `200 OK` inmediatamente.
+
+## Variables de Entorno
+
+Crea un archivo `.env` en la raíz del proyecto:
+
+```env
+# MercadoPago
+MP_ACCESS_TOKEN=APP_USR-...           # Access token de MercadoPago (requerido)
+
+# URLs de redirección post-pago
+MP_SUCCESS_URL=https://tuapp.com/pago/exito
+MP_FAILURE_URL=https://tuapp.com/pago/error
+MP_PENDING_URL=https://tuapp.com/pago/pendiente
+
+# URL donde MercadoPago envía webhooks
+NOTIFICATION_URL=https://tu-microservicio.com/mercadopago/webhook
+
+# Backend principal (para actualizar reservas y enviar correos)
+BACKEND_URL=https://tu-backend.com
+
+# MongoDB
+MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/db
+
+# Puerto (opcional, default: 3000)
+PORT=3000
+```
+
+## Instalación
+
+### Requisitos previos
+
+- **Node.js** (ver [`.nvmrc`](.nvmrc) para la versión recomendada)
+- **npm** (incluido con Node.js)
+- **MongoDB** (local o Atlas)
+
+### Configuración
 
 ```bash
-# unit tests
-$ pnpm run test
+# 1. Clonar el repositorio
+git clone https://github.com/Asilvam/mercadopago-microservice.git
+cd mercadopago-microservice
 
-# e2e tests
-$ pnpm run test:e2e
+# 2. Instalar dependencias
+npm install
 
-# test coverage
-$ pnpm run test:cov
+# 3. Configurar variables de entorno
+cp .env.example .env
+# Editar .env con tus credenciales
 ```
+
+## Ejecución
+
+```bash
+# Desarrollo (con hot-reload)
+npm run start:dev
+
+# Producción
+npm run build
+npm run start:prod
+```
+
+## Tests
+
+```bash
+# Tests unitarios
+npm run test
+
+# Tests e2e
+npm run test:e2e
+
+# Cobertura
+npm run test:cov
+```
+
+## Auditoría (Audit Logs)
+
+Cada acción relevante se registra en la colección `mp_logs` de MongoDB con deduplicación automática por `(entityType, entityId, action)`.
+
+### Acciones registradas
+
+| Acción | Descripción |
+|---|---|
+| `WEBHOOK_RECEIVED` | Webhook recibido de MercadoPago |
+| `WEBHOOK_PAYMENT_APPROVED` | Pago aprobado |
+| `WEBHOOK_PAYMENT_PENDING` | Pago pendiente |
+| `WEBHOOK_PAYMENT_REJECTED` | Pago rechazado |
+| `RESERVATION_UPDATE_OK` | Reserva actualizada exitosamente |
+| `RESERVATION_UPDATE_ERROR` | Error al actualizar reserva |
+| `EMAIL_CONFIRMATION_OK` | Correo de confirmación enviado |
+| `EMAIL_CONFIRMATION_ERROR` | Error al enviar correo |
+| `WEBHOOK_ERROR` | Error general procesando webhook |
+
+### Tolerancia a fallos
+
+El servicio de auditoría es **resiliente a caídas de MongoDB**:
+- Si MongoDB se desconecta, los audit logs se deshabilitan silenciosamente (con un warning inicial).
+- La reconexión se intenta automáticamente cada 60 segundos.
+- El microservicio sigue funcionando normalmente sin MongoDB.
 
 ## Deployment
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+El proyecto incluye un [`Procfile`](Procfile) para despliegue en plataformas como Heroku o Railway:
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g mau
-$ mau deploy
+```
+web: npm run start:prod
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Licencia
 
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Proyecto privado — todos los derechos reservados.
