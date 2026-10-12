@@ -1,13 +1,21 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { MercadopagoService } from './mercadopago.service';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { AUDIT_ACTIONS } from '../audit-log/audit-log.constants';
+import { WebhookInboxService } from '../audit-log/webhook-inbox.service';
 
 // Mock del SDK de MercadoPago
 jest.mock('mercadopago', () => {
   const mockPreferenceCreate = jest.fn();
   const mockPaymentGet = jest.fn();
+  const mockSignatureValidate = jest.fn();
+  class MockInvalidWebhookSignatureError extends Error {
+    constructor(public readonly reason: string) {
+      super(`Invalid webhook signature: ${reason}`);
+    }
+  }
   return {
     MercadoPagoConfig: jest.fn().mockImplementation(() => ({})),
     Preference: jest.fn().mockImplementation(() => ({
@@ -16,8 +24,11 @@ jest.mock('mercadopago', () => {
     Payment: jest.fn().mockImplementation(() => ({
       get: mockPaymentGet,
     })),
+    WebhookSignatureValidator: { validate: mockSignatureValidate },
+    InvalidWebhookSignatureError: MockInvalidWebhookSignatureError,
     __mockPreferenceCreate: mockPreferenceCreate,
     __mockPaymentGet: mockPaymentGet,
+    __mockSignatureValidate: mockSignatureValidate,
   };
 });
 
@@ -35,6 +46,7 @@ describe('MercadopagoService', () => {
   let auditLogService: jest.Mocked<AuditLogService>;
   let mockPreferenceCreate: jest.Mock;
   let mockPaymentGet: jest.Mock;
+  let mockSignatureValidate: jest.Mock;
 
   const envConfig: Record<string, string> = {
     MP_ACCESS_TOKEN: 'TEST-access-token-123',
@@ -43,6 +55,8 @@ describe('MercadopagoService', () => {
     MP_FAILURE_URL: 'http://localhost/failure',
     MP_PENDING_URL: 'http://localhost/pending',
     NOTIFICATION_URL: 'http://localhost/webhook',
+    MP_WEBHOOK_SECRET: 'webhook-secret',
+    INTERNAL_API_KEY: 'internal-secret',
   };
 
   const mockConfigService = {
@@ -54,17 +68,30 @@ describe('MercadopagoService', () => {
     setMongoConnectionStatus: jest.fn(),
   };
 
+  const mockWebhookInboxService = {
+    enqueue: jest.fn().mockResolvedValue({ created: true, eventKey: 'event-key' }),
+    claimNext: jest.fn().mockResolvedValue(null),
+    markProcessed: jest.fn().mockResolvedValue(undefined),
+    markFailed: jest.fn().mockResolvedValue(undefined),
+    executeEffectOnce: jest.fn().mockImplementation(async (_effectKey: string, _eventKey: string, _effectType: string, handler: () => Promise<void>) => {
+      await handler();
+      return true;
+    }),
+  };
+
   beforeEach(async () => {
     // Obtener referencias a los mocks del SDK
-    const mp = require('mercadopago');
+    const mp = jest.requireMock('mercadopago');
     mockPreferenceCreate = mp.__mockPreferenceCreate;
     mockPaymentGet = mp.__mockPaymentGet;
+    mockSignatureValidate = mp.__mockSignatureValidate;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MercadopagoService,
         { provide: ConfigService, useValue: mockConfigService },
         { provide: AuditLogService, useValue: mockAuditLogService },
+        { provide: WebhookInboxService, useValue: mockWebhookInboxService },
       ],
     }).compile();
 
@@ -75,6 +102,88 @@ describe('MercadopagoService', () => {
   afterEach(() => {
     jest.clearAllMocks();
     mockFetch.mockReset();
+    envConfig.INTERNAL_API_KEY = 'internal-secret';
+  });
+
+  describe('acceptWebhook', () => {
+    const webhook = {
+      paymentId: 'payment-123',
+      eventType: 'payment',
+      requestId: 'request-123',
+      dataId: 'payment-123',
+      xSignature: 'ts=123,v1=hash',
+      metadata: { source: 'body' },
+      payload: { body: { data: { id: 'payment-123' } } },
+    };
+
+    it('valida la firma y persiste en el inbox antes de aceptar', async () => {
+      const result = await service.acceptWebhook(webhook);
+
+      expect(mockSignatureValidate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          xSignature: webhook.xSignature,
+          xRequestId: webhook.requestId,
+          dataId: webhook.dataId,
+          secret: 'webhook-secret',
+        }),
+      );
+      expect(mockWebhookInboxService.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: 'payment-123',
+          eventType: 'payment',
+          eventKey: expect.any(String),
+        }),
+      );
+      expect(result).toEqual({
+        accepted: true,
+        duplicate: false,
+        eventKey: expect.any(String),
+      });
+    });
+
+    it('reporta como duplicada una notificación ya persistida', async () => {
+      mockWebhookInboxService.enqueue.mockResolvedValueOnce({ created: false, eventKey: 'event-key' });
+
+      await expect(service.acceptWebhook(webhook)).resolves.toEqual(
+        expect.objectContaining({
+          accepted: true,
+          duplicate: true,
+        }),
+      );
+    });
+
+    it('no confirma recepción mientras la persistencia sigue pendiente', async () => {
+      let resolvePersistence: (result: { created: boolean; eventKey: string }) => void;
+      const pending = new Promise<{ created: boolean; eventKey: string }>((resolve) => {
+        resolvePersistence = resolve;
+      });
+      mockWebhookInboxService.enqueue.mockReturnValueOnce(pending);
+      let accepted = false;
+      const result = service.acceptWebhook(webhook).then((value) => {
+        accepted = true;
+        return value;
+      });
+
+      await Promise.resolve();
+      expect(accepted).toBe(false);
+      resolvePersistence({ created: true, eventKey: 'event-key' });
+      await expect(result).resolves.toEqual(expect.objectContaining({ accepted: true }));
+    });
+
+    it('rechaza una firma inválida sin escribir en el inbox', async () => {
+      mockSignatureValidate.mockImplementationOnce(() => {
+        throw new Error('SignatureMismatch');
+      });
+
+      await expect(service.acceptWebhook(webhook)).rejects.toThrow('Invalid Mercado Pago webhook signature');
+      expect(mockWebhookInboxService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('devuelve error temporal cuando el inbox no puede persistir', async () => {
+      mockWebhookInboxService.enqueue.mockRejectedValueOnce(new Error('Mongo unavailable'));
+
+      await expect(service.acceptWebhook(webhook)).rejects.toThrow('Webhook persistence unavailable');
+    });
   });
 
   describe('createPaymentPreference', () => {
@@ -136,11 +245,12 @@ describe('MercadopagoService', () => {
       });
     });
 
-    it('debería lanzar error si el SDK de MercadoPago falla', async () => {
+    it('debería lanzar ServiceUnavailableException si el SDK de MercadoPago falla', async () => {
       mockPreferenceCreate.mockRejectedValue(new Error('Invalid access token'));
 
+      await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow(ServiceUnavailableException);
       await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow(
-        'Invalid access token',
+        'No se pudo crear la preferencia de pago. Intente nuevamente.',
       );
     });
   });
@@ -212,9 +322,10 @@ describe('MercadopagoService', () => {
       it('debería llamar a updateReservationState con la external_reference', async () => {
         await service.handleWebhook(paymentId, eventType, requestMetadata);
 
+        expect(mockFetch).toHaveBeenCalledWith('http://localhost:4000/court-reserve/UpdateStateReserve/reserve-001', expect.objectContaining({ method: 'POST' }));
         expect(mockFetch).toHaveBeenCalledWith(
           'http://localhost:4000/court-reserve/UpdateStateReserve/reserve-001',
-          expect.objectContaining({ method: 'POST' }),
+          expect.objectContaining({ headers: expect.objectContaining({ 'x-api-key': 'internal-secret' }) }),
         );
       });
 
@@ -272,9 +383,7 @@ describe('MercadopagoService', () => {
         await service.handleWebhook(paymentId, eventType, requestMetadata);
 
         // Solo emailconfirmation debería llamarse, no UpdateStateReserve
-        const updateCalls = mockFetch.mock.calls.filter(
-          (call) => call[0].includes('UpdateStateReserve'),
-        );
+        const updateCalls = mockFetch.mock.calls.filter((call) => call[0].includes('UpdateStateReserve'));
         expect(updateCalls).toHaveLength(0);
       });
 
@@ -311,9 +420,7 @@ describe('MercadopagoService', () => {
       it('debería NO actualizar reserva', async () => {
         await service.handleWebhook(paymentId, eventType, requestMetadata);
 
-        const updateCalls = mockFetch.mock.calls.filter(
-          (call) => call[0].includes('UpdateStateReserve'),
-        );
+        const updateCalls = mockFetch.mock.calls.filter((call) => call[0].includes('UpdateStateReserve'));
         expect(updateCalls).toHaveLength(0);
       });
     });
@@ -322,7 +429,7 @@ describe('MercadopagoService', () => {
       it('debería registrar WEBHOOK_ERROR si el SDK falla al consultar el pago', async () => {
         mockPaymentGet.mockRejectedValue(new Error('Payment not found'));
 
-        await service.handleWebhook(paymentId, eventType, requestMetadata);
+        await expect(service.handleWebhook(paymentId, eventType, requestMetadata)).rejects.toThrow('Payment not found');
 
         expect(auditLogService.createAuditLog).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -334,23 +441,116 @@ describe('MercadopagoService', () => {
         );
       });
 
-      it('debería NO lanzar excepción si el SDK falla', async () => {
+      it('debería propagar la excepción para que el inbox reprograme el evento', async () => {
         mockPaymentGet.mockRejectedValue(new Error('Network error'));
 
-        await expect(
-          service.handleWebhook(paymentId, eventType, requestMetadata),
-        ).resolves.toBeUndefined();
+        await expect(service.handleWebhook(paymentId, eventType, requestMetadata)).rejects.toThrow('Network error');
       });
 
       it('debería registrar RESERVATION_UPDATE_ERROR si falla la actualización', async () => {
         mockPaymentGet.mockResolvedValue(approvedPayment);
         mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
 
-        await service.handleWebhook(paymentId, eventType, requestMetadata);
+        await expect(service.handleWebhook(paymentId, eventType, requestMetadata)).rejects.toThrow('HTTP 500');
 
         expect(auditLogService.createAuditLog).toHaveBeenCalledWith(
           expect.objectContaining({
             action: AUDIT_ACTIONS.RESERVATION_UPDATE_ERROR,
+          }),
+        );
+      });
+    });
+
+    describe('compatibilidad de callbacks con el backend', () => {
+      it.each([
+        'approved', 'authorized', 'pending', 'in_process', 'in_mediation',
+        'rejected', 'cancelled', 'refunded', 'charged_back',
+      ])('autentica y distingue el correo del estado %s', async (status) => {
+        mockPaymentGet.mockResolvedValue({ ...approvedPayment, status });
+
+        await service.handleWebhook(paymentId, eventType, requestMetadata);
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          'http://localhost:4000/court-reserve/emailconfirmation',
+          expect.objectContaining({
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': envConfig.INTERNAL_API_KEY,
+              'Idempotency-Key': `mercadopago:${paymentId}:email:${status}`,
+            },
+            body: JSON.stringify({ reservationId: 'reserve-001', paymentStatus: status }),
+          }),
+        );
+      });
+
+      it('reutiliza las claves de un mismo pago aunque cambie la notificación', async () => {
+        mockPaymentGet.mockResolvedValue(approvedPayment);
+
+        await service.handleWebhook(paymentId, eventType, { requestId: 'notification-1' });
+        await service.handleWebhook(paymentId, eventType, { requestId: 'notification-2' });
+
+        const updateHeaders = mockFetch.mock.calls
+          .filter(([url]) => url.includes('UpdateStateReserve'))
+          .map(([, request]) => request.headers);
+        const emailHeaders = mockFetch.mock.calls
+          .filter(([url]) => url.includes('emailconfirmation'))
+          .map(([, request]) => request.headers);
+
+        expect(updateHeaders).toHaveLength(2);
+        expect(updateHeaders[0]).toEqual(updateHeaders[1]);
+        expect(updateHeaders[0]['Idempotency-Key']).toBe(`mercadopago:${paymentId}:reservation-approved`);
+        expect(emailHeaders).toHaveLength(2);
+        expect(emailHeaders[0]).toEqual(emailHeaders[1]);
+        expect(emailHeaders[0]['Idempotency-Key']).toBe(`mercadopago:${paymentId}:email:approved`);
+        expect(updateHeaders[0]['Idempotency-Key']).not.toBe(emailHeaders[0]['Idempotency-Key']);
+      });
+
+      it('usa claves de correo distintas cuando el mismo pago cambia de estado', async () => {
+        mockPaymentGet.mockResolvedValueOnce(pendingPayment).mockResolvedValueOnce(approvedPayment);
+
+        await service.handleWebhook(paymentId, eventType, requestMetadata);
+        await service.handleWebhook(paymentId, eventType, requestMetadata);
+
+        const keys = mockFetch.mock.calls
+          .filter(([url]) => url.includes('emailconfirmation'))
+          .map(([, request]) => request.headers['Idempotency-Key']);
+        expect(keys).toEqual([
+          `mercadopago:${paymentId}:email:pending`,
+          `mercadopago:${paymentId}:email:approved`,
+        ]);
+      });
+
+      it('no comparte la clave entre pagos distintos', async () => {
+        mockPaymentGet.mockResolvedValue(approvedPayment);
+
+        await service.handleWebhook(paymentId, eventType, requestMetadata);
+        await service.handleWebhook('pay-other', eventType, requestMetadata);
+
+        const keys = mockFetch.mock.calls
+          .filter(([url]) => url.includes('UpdateStateReserve'))
+          .map(([, request]) => request.headers['Idempotency-Key']);
+        expect(keys).toEqual([
+          `mercadopago:${paymentId}:reservation-approved`,
+          'mercadopago:pay-other:reservation-approved',
+        ]);
+      });
+
+      it.each([
+        ['approved', AUDIT_ACTIONS.RESERVATION_UPDATE_ERROR],
+        ['pending', AUDIT_ACTIONS.EMAIL_CONFIRMATION_ERROR],
+      ])('no envía callbacks sin INTERNAL_API_KEY para estado %s', async (status, action) => {
+        delete envConfig.INTERNAL_API_KEY;
+        mockPaymentGet.mockResolvedValue({ ...approvedPayment, status });
+
+        await expect(service.handleWebhook(paymentId, eventType, requestMetadata)).rejects.toThrow('INTERNAL_API_KEY is not configured');
+
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(auditLogService.createAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action,
+            metadata: expect.objectContaining({
+              error: 'INTERNAL_API_KEY is not configured',
+            }),
           }),
         );
       });
@@ -365,9 +565,7 @@ describe('MercadopagoService', () => {
 
         await service.handleWebhook(paymentId, eventType, requestMetadata);
 
-        const emailCalls = mockFetch.mock.calls.filter(
-          (call) => call[0].includes('emailconfirmation'),
-        );
+        const emailCalls = mockFetch.mock.calls.filter((call) => call[0].includes('emailconfirmation'));
         expect(emailCalls).toHaveLength(0);
       });
     });
