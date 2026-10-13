@@ -1,6 +1,10 @@
-import { IsString, IsNumber, IsNotEmpty } from 'class-validator';
+import { IsString, IsNumber, IsNotEmpty, IsOptional, IsDateString } from 'class-validator';
 
 export class CreateMpDto {
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
+
   @IsString()
   @IsNotEmpty()
   courtId: string;

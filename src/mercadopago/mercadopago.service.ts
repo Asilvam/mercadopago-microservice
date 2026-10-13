@@ -185,6 +185,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
+      const reservation = await response.json();
       this.logger.log(`[updateReservationState] Reserva ${reservationId} actualizada exitosamente`);
       await this.createAuditLog({
         entityType: 'COURT_RESERVE',
@@ -193,6 +194,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         description: `Reserva ${reservationId} actualizada exitosamente`,
         metadata,
       });
+      return reservation;
     } catch (error) {
       this.logger.error(`[updateReservationState] Error actualizando reserva ${reservationId}:`, error.message);
       await this.createAuditLog({
@@ -226,6 +228,11 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      if (result.skipped === 'PAYMENT_REVIEW_REQUIRED') {
+        this.logger.warn(`[emailConfirmation] Reserva ${reservationId} requiere revisión; no se envió confirmación.`);
+        return;
       }
       this.logger.log(`[emailConfirmation] Reserva ${reservationId} correo status enviado exitosamente`);
       await this.createAuditLog({
@@ -283,6 +290,11 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         },
         auto_return: 'approved',
         notification_url: notificationUrl,
+        ...(paymentDTO.expiresAt ? {
+          expires: true,
+          expiration_date_from: new Date().toISOString(),
+          expiration_date_to: paymentDTO.expiresAt,
+        } : {}),
         metadata: {
           courtId,
           date,
@@ -301,6 +313,32 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       this.logger.error('Error al crear la preferencia', error.message);
       throw new ServiceUnavailableException('No se pudo crear la preferencia de pago. Intente nuevamente.');
     }
+  }
+
+  async reconcileReservation(reservationId: string): Promise<{ status: string }> {
+    const result = await new Payment(this.client).search({ options: {
+      external_reference: reservationId, sort: 'date_created', criteria: 'desc', limit: 100,
+    } });
+    const payments = result.results;
+    const total = result.paging?.total;
+    // Never release on a malformed or partial response.
+    if (!Array.isArray(payments) || !Number.isSafeInteger(total) || total < 0 || total !== payments.length) return { status: 'processing' };
+    if (payments.some((payment) => !payment || payment.external_reference !== reservationId || typeof payment.status !== 'string')) return { status: 'processing' };
+    const approved = payments.find((payment) => payment.status === 'approved');
+    if (approved?.id) {
+      const paymentId = String(approved.id);
+      const eventKey = createHash('sha256').update(`hold-reconciliation:mercadopago:${paymentId}`).digest('hex');
+      // Internal authenticated reconciliation also needs durable retries, especially
+      // when the reservation is activated but the email service is unavailable.
+      await this.webhookInboxService.enqueue({
+        eventKey, paymentId, eventType: 'payment',
+        payload: { metadata: { source: 'hold-expiration' } },
+      });
+      queueMicrotask(() => void this.drainInbox());
+      return { status: 'approved' };
+    }
+    if (payments.some((payment) => !['rejected', 'cancelled', 'refunded', 'charged_back'].includes(payment.status))) return { status: 'processing' };
+    return { status: payments.length ? 'rejected' : 'unpaid' };
   }
 
   /**
@@ -364,9 +402,15 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
           throw new Error('Approved payment has no external_reference');
         }
         const effectKey = `mercadopago:${paymentId}:reservation-approved`;
-        await this.webhookInboxService.executeEffectOnce(effectKey, String(requestMetadata.eventKey || paymentId), 'RESERVATION_UPDATE', () =>
-          this.updateReservationState(paymentInfo.external_reference, baseMetadata, effectKey),
-        );
+        let needsReview = false;
+        await this.webhookInboxService.executeEffectOnce(effectKey, String(requestMetadata.eventKey || paymentId), 'RESERVATION_UPDATE', async () => {
+          const reserve = await this.updateReservationState(paymentInfo.external_reference, baseMetadata, effectKey);
+          needsReview = reserve.reservationStatus === 'PAYMENT_REVIEW_REQUIRED';
+        });
+        if (needsReview) {
+          this.logger.error(`[Webhook] Pago ${paymentId} recibido para un horario ocupado. Reserva ${paymentInfo.external_reference} requiere revisión del club.`);
+          return;
+        }
       } else {
         // El pago no fue aprobado (ej. "rejected", "pending")
         this.logger.warn(`[Webhook] Pago NO aprobado. Estado: ${paymentInfo.status}`);

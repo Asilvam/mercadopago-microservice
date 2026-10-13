@@ -106,6 +106,14 @@ Recibe notificaciones de pago de MercadoPago. Acepta el `paymentId` tanto en el 
 
 Expone contadores operativos en memoria para persistencia, duplicados, reintentos, fallos y efectos omitidos. No incluye payloads ni credenciales.
 
+### Conciliación de retenciones
+
+`POST /mercadopago/reconcile-reservation`, protegido por `x-api-key`, recibe `{ "reservationId": "..." }`. Consulta los intentos de pago de esa reserva. Una aprobación se persiste en el inbox antes de responder `approved`; resultados incompletos, malformados o pagos aún en proceso mantienen `processing`. Solo una búsqueda completa sin pagos devuelve `unpaid`; todos los intentos terminados sin aprobación devuelven `rejected`. Una caída del proveedor o del inbox no se interpreta como ausencia de pago.
+
+`create-preference` acepta `expiresAt` opcional, proporcionado por el backend, y conserva ese vencimiento. Si el backend marca una aprobación tardía como `PAYMENT_REVIEW_REQUIRED`, no se envía una confirmación falsa.
+
+Esta integración requiere backend y frontend compatibles con retenciones. No agrega variables de entorno ni cambios al servicio de correo. Los montos continúan calculándose exclusivamente en el backend. Publicar Mercado Pago antes de coordinar backend y front.
+
 ## Variables de Entorno
 
 Crea un archivo `.env` en la raíz del proyecto:

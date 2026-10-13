@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logg
 import { MercadopagoService } from './mercadopago.service';
 import { CreateMpDto } from './dto/create-mp.dto';
 import { InternalApiKeyGuard } from '../common/guards/internal-api-key.guard';
+import { ReconcileReservationDto } from './dto/reconcile-reservation.dto';
 
 @Controller('mercadopago')
 export class MercadopagoController {
@@ -12,6 +13,12 @@ export class MercadopagoController {
   @UseGuards(InternalApiKeyGuard)
   createPaymentPreference(@Body() paymentDTO: CreateMpDto) {
     return this.mercadopagoService.createPaymentPreference(paymentDTO);
+  }
+
+  @Post('reconcile-reservation')
+  @UseGuards(InternalApiKeyGuard)
+  reconcileReservation(@Body() dto: ReconcileReservationDto) {
+    return this.mercadopagoService.reconcileReservation(dto.reservationId);
   }
 
   @Get('health')

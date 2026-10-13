@@ -10,6 +10,7 @@ import { WebhookInboxService } from '../audit-log/webhook-inbox.service';
 jest.mock('mercadopago', () => {
   const mockPreferenceCreate = jest.fn();
   const mockPaymentGet = jest.fn();
+  const mockPaymentSearch = jest.fn();
   const mockSignatureValidate = jest.fn();
   class MockInvalidWebhookSignatureError extends Error {
     constructor(public readonly reason: string) {
@@ -23,11 +24,13 @@ jest.mock('mercadopago', () => {
     })),
     Payment: jest.fn().mockImplementation(() => ({
       get: mockPaymentGet,
+      search: mockPaymentSearch,
     })),
     WebhookSignatureValidator: { validate: mockSignatureValidate },
     InvalidWebhookSignatureError: MockInvalidWebhookSignatureError,
     __mockPreferenceCreate: mockPreferenceCreate,
     __mockPaymentGet: mockPaymentGet,
+    __mockPaymentSearch: mockPaymentSearch,
     __mockSignatureValidate: mockSignatureValidate,
   };
 });
@@ -255,6 +258,70 @@ describe('MercadopagoService', () => {
     });
   });
 
+  describe('hold reconciliation', () => {
+    it('reports no payment only after a complete empty search', async () => {
+      const search = jest.requireMock('mercadopago').__mockPaymentSearch;
+      search.mockResolvedValue({ results: [], paging: { total: 0 } });
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'unpaid' });
+      expect(search).toHaveBeenCalledWith({ options: expect.objectContaining({ external_reference: 'reserve-1' }) });
+    });
+
+    it.each(['pending', 'in_process', 'authorized', 'in_mediation'])('keeps the hold for a %s payment', async status => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue({ results: [{ external_reference: 'reserve-1', status }], paging: { total: 1 } });
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'processing' });
+    });
+
+    it('keeps the hold on incomplete search results', async () => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue({ results: [], paging: { total: 1 } });
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'processing' });
+    });
+
+    it.each([
+      { results: [] },
+      { results: [], paging: {} },
+      { results: [], paging: { total: -1 } },
+      { results: [], paging: { total: '0' } },
+      { results: [], paging: { total: 0.5 } },
+      { results: [null], paging: { total: 1 } },
+      { results: [{ external_reference: 'other', status: 'rejected' }], paging: { total: 1 } },
+      { results: [{ external_reference: 'reserve-1' }], paging: { total: 1 } },
+    ])('keeps the hold when search metadata or payment data is malformed: %j', async result => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue(result);
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'processing' });
+      expect(mockWebhookInboxService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('releases only when every returned attempt has finished unsuccessfully', async () => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue({ results: [
+        { external_reference: 'reserve-1', status: 'rejected' }, { external_reference: 'reserve-1', status: 'cancelled' },
+      ], paging: { total: 2 } });
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'rejected' });
+    });
+
+    it('persists a verified approval in the inbox before answering', async () => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue({ results: [{ id: 'pay-1', external_reference: 'reserve-1', status: 'approved' }], paging: { total: 1 } });
+      await expect(service.reconcileReservation('reserve-1')).resolves.toEqual({ status: 'approved' });
+      expect(mockWebhookInboxService.enqueue).toHaveBeenCalledWith({ eventKey: expect.any(String), paymentId: 'pay-1', eventType: 'payment', payload: { metadata: { source: 'hold-expiration' } } });
+    });
+
+    it('propagates a persistence failure so the backend keeps the slot blocked', async () => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockResolvedValue({ results: [{ id: 'pay-1', external_reference: 'reserve-1', status: 'approved' }], paging: { total: 1 } });
+      mockWebhookInboxService.enqueue.mockRejectedValueOnce(new Error('Inbox unavailable'));
+      await expect(service.reconcileReservation('reserve-1')).rejects.toThrow('Inbox unavailable');
+    });
+
+    it('does not interpret provider failures as an unpaid checkout', async () => {
+      jest.requireMock('mercadopago').__mockPaymentSearch.mockRejectedValue(new Error('Provider unavailable'));
+      await expect(service.reconcileReservation('reserve-1')).rejects.toThrow('Provider unavailable');
+    });
+
+    it('uses the original hold deadline for preference expiration', async () => {
+      mockPreferenceCreate.mockResolvedValue({ id: 'pref-1', init_point: 'https://mp.test/pay' });
+      await service.createPaymentPreference({ courtId: 'Cancha 1', date: '2030-10-12', time: '20:15-22:00', player1: 'Player', amount: 4000, idCourtReserve: 'r-1', expiresAt: '2030-10-12T23:00:00.000Z' });
+      expect(mockPreferenceCreate).toHaveBeenCalledWith({ body: expect.objectContaining({ expires: true, expiration_date_to: '2030-10-12T23:00:00.000Z' }) });
+    });
+  });
+
   describe('handleWebhook', () => {
     const paymentId = 'pay-12345';
     const eventType = 'payment';
@@ -279,7 +346,7 @@ describe('MercadopagoService', () => {
     };
 
     beforeEach(() => {
-      mockFetch.mockResolvedValue({ ok: true });
+      mockFetch.mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue({ reservationStatus: 'CONFIRMED' }) });
     });
 
     it('debería registrar audit log WEBHOOK_RECEIVED al inicio', async () => {
@@ -351,6 +418,12 @@ describe('MercadopagoService', () => {
             body: expect.stringContaining('reserve-001'),
           }),
         );
+      });
+
+      it('does not send a confirmation if the backend flags the payment for review', async () => {
+        mockFetch.mockResolvedValue({ ok: true, json: jest.fn().mockResolvedValue({ reservationStatus: 'PAYMENT_REVIEW_REQUIRED' }) });
+        await service.handleWebhook(paymentId, eventType, requestMetadata);
+        expect(mockFetch.mock.calls.filter(call => call[0].includes('emailconfirmation'))).toHaveLength(0);
       });
 
       it('debería registrar EMAIL_CONFIRMATION_OK al enviar correo exitosamente', async () => {
