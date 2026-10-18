@@ -333,36 +333,54 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       Date.parse(dto.expiresAt) <= Date.now()
     )
       throw new BadRequestException('Invalid monthly checkout.');
-    const { collectorId } = await this.membershipConfiguration();
-    const returnUrl = new URL('/monthlypayments', this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL')));
-    returnUrl.searchParams.set('reference', dto.reference);
-    const notificationUrl = this.checkedUrl(this.configService.get<string>('NOTIFICATION_URL'));
-    const monthlyClient = new MercadoPagoConfig({
-      accessToken: this.configService.get<string>('MP_ACCESS_TOKEN'),
-      options: { timeout: 15000, idempotencyKey: dto.reference },
-    });
-    const result = await new Preference(monthlyClient).create({
-      body: {
-        items: [{ id: dto.reference, title: 'Mensualidades Club de Tenis Quintero', quantity: 1, currency_id: 'CLP', unit_price: dto.amount, category_id: 'services' }],
-        external_reference: dto.reference,
-        metadata: { purpose: 'MEMBERSHIP', membership_reference: dto.reference, pricing_mode: dto.pricingMode },
-        back_urls: { success: returnUrl.toString(), failure: returnUrl.toString(), pending: returnUrl.toString() },
-        ...(returnUrl.protocol === 'https:' ? { auto_return: 'approved' as const } : {}),
-        notification_url: notificationUrl,
-        expires: true,
-        expiration_date_from: new Date().toISOString(),
-        expiration_date_to: dto.expiresAt,
-      },
-    });
-    if (String(result.collector_id) !== collectorId) throw new ServiceUnavailableException('Unexpected monthly preference collector.');
-    const context = await this.membershipPreference(dto.reference, collectorId, String(result.id));
-    if (!context.liveMode && dto.pricingMode !== 'TEST') throw new ServiceUnavailableException('Sandbox is restricted to authorized test dues.');
-    const initPoint = context.liveMode ? result.init_point : result.sandbox_init_point;
-    if (!result.id || !initPoint) throw new ServiceUnavailableException('Incomplete monthly preference response.');
-    const checkout = new URL(initPoint);
-    if (checkout.protocol !== 'https:' || checkout.username || checkout.password || !/^(www\.|sandbox\.)?mercadopago\.(cl|com|com\.ar|com\.br)$/.test(checkout.hostname))
-      throw new ServiceUnavailableException('Unexpected Mercado Pago checkout URL.');
-    return { preferenceId: String(result.id), initPoint, collectorId, liveMode: context.liveMode };
+    const startedAt = Date.now();
+    let phase = 'configuration';
+    let preferenceId: string | undefined;
+    this.logger.log(`[MembershipCheckout] Started reference=${dto.reference} mode=${dto.pricingMode} amount=${dto.amount}`);
+    try {
+      const { collectorId } = await this.membershipConfiguration();
+      const returnUrl = new URL('/monthlypayments', this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL')));
+      returnUrl.searchParams.set('reference', dto.reference);
+      const notificationUrl = this.checkedUrl(this.configService.get<string>('NOTIFICATION_URL'));
+      const monthlyClient = new MercadoPagoConfig({
+        accessToken: this.configService.get<string>('MP_ACCESS_TOKEN'),
+        options: { timeout: 15000, idempotencyKey: dto.reference },
+      });
+      phase = 'create-preference';
+      this.logger.log(`[MembershipCheckout] Creating preference reference=${dto.reference} collectorId=${collectorId}`);
+      const result = await new Preference(monthlyClient).create({
+        body: {
+          items: [{ id: dto.reference, title: 'Mensualidades Club de Tenis Quintero', quantity: 1, currency_id: 'CLP', unit_price: dto.amount, category_id: 'services' }],
+          external_reference: dto.reference,
+          metadata: { purpose: 'MEMBERSHIP', membership_reference: dto.reference, pricing_mode: dto.pricingMode },
+          back_urls: { success: returnUrl.toString(), failure: returnUrl.toString(), pending: returnUrl.toString() },
+          ...(returnUrl.protocol === 'https:' ? { auto_return: 'approved' as const } : {}),
+          notification_url: notificationUrl,
+          expires: true,
+          expiration_date_from: new Date().toISOString(),
+          expiration_date_to: dto.expiresAt,
+        },
+      });
+      preferenceId = result.id ? String(result.id) : undefined;
+      this.logger.log(`[MembershipCheckout] Preference created reference=${dto.reference} preferenceId=${preferenceId || 'missing'} collectorId=${result.collector_id}`);
+      if (String(result.collector_id) !== collectorId) throw new ServiceUnavailableException('Unexpected monthly preference collector.');
+      phase = 'verify-preference';
+      this.logger.log(`[MembershipCheckout] Verifying preference reference=${dto.reference} preferenceId=${preferenceId || 'missing'}`);
+      const context = await this.membershipPreference(dto.reference, collectorId, preferenceId);
+      if (!context.liveMode && dto.pricingMode !== 'TEST') throw new ServiceUnavailableException('Sandbox is restricted to authorized test dues.');
+      const initPoint = context.liveMode ? result.init_point : result.sandbox_init_point;
+      if (!preferenceId || !initPoint) throw new ServiceUnavailableException('Incomplete monthly preference response.');
+      const checkout = new URL(initPoint);
+      if (checkout.protocol !== 'https:' || checkout.username || checkout.password || !/^(www\.|sandbox\.)?mercadopago\.(cl|com|com\.ar|com\.br)$/.test(checkout.hostname))
+        throw new ServiceUnavailableException('Unexpected Mercado Pago checkout URL.');
+      this.logger.log(`[MembershipCheckout] Checkout ready reference=${dto.reference} preferenceId=${preferenceId} liveMode=${context.liveMode} elapsedMs=${Date.now() - startedAt}`);
+      return { preferenceId, initPoint, collectorId, liveMode: context.liveMode };
+    } catch (error) {
+      this.logger.error(
+        `[MembershipCheckout] Failed reference=${dto.reference} phase=${phase} preferenceId=${preferenceId || 'not-created'} elapsedMs=${Date.now() - startedAt} error=${this.errorMessage(error)}`,
+      );
+      throw error;
+    }
   }
 
   private membershipSnapshot(paymentId: string, payment: any) {
