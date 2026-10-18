@@ -286,7 +286,23 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async membershipPreference(reference: string, collectorId: string, preferenceId?: string) {
-    const result = await new Preference(this.client).search({ options: { external_reference: reference, limit: 100 } });
+    const options = { external_reference: reference, limit: 100 };
+    const startedAt = Date.now();
+    this.logger.debug(
+      `[MembershipPreferenceLookup] Started reference=${reference} expectedPreferenceId=${preferenceId || 'any'} limit=${options.limit}`,
+    );
+    let result: Awaited<ReturnType<InstanceType<typeof Preference>['search']>>;
+    try {
+      result = await new Preference(this.client).search({ options });
+    } catch (error) {
+      this.logger.error(
+        `[MembershipPreferenceLookup] Search failed reference=${reference} expectedPreferenceId=${preferenceId || 'any'} elapsedMs=${Date.now() - startedAt} error=${this.errorDetails(error)}`,
+      );
+      throw error;
+    }
+    this.logger.debug(
+      `[MembershipPreferenceLookup] Search returned reference=${reference} total=${result.total ?? 'missing'} elements=${Array.isArray(result.elements) ? result.elements.length : 'invalid'} elapsedMs=${Date.now() - startedAt}`,
+    );
     if (!Array.isArray(result.elements) || result.total !== 1 || result.elements.length !== 1)
       throw new ServiceUnavailableException('The monthly preference could not be verified uniquely.');
     const preference = result.elements[0];
@@ -296,8 +312,15 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       preference.external_reference !== reference ||
       String(preference.collector_id) !== collectorId ||
       typeof preference.live_mode !== 'boolean'
-    )
+    ) {
+      this.logger.error(
+        `[MembershipPreferenceLookup] Verification mismatch reference=${reference} expectedPreferenceId=${preferenceId || 'any'} returnedPreferenceId=${preference.id || 'missing'} collectorMatches=${String(preference.collector_id) === collectorId} liveMode=${typeof preference.live_mode === 'boolean' ? preference.live_mode : 'missing'}`,
+      );
       throw new ServiceUnavailableException('Monthly preference account or mode could not be verified.');
+    }
+    this.logger.debug(
+      `[MembershipPreferenceLookup] Verified reference=${reference} preferenceId=${preference.id} liveMode=${preference.live_mode}`,
+    );
     return { id: preference.id, collectorId, liveMode: preference.live_mode };
   }
 
@@ -377,7 +400,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       return { preferenceId, initPoint, collectorId, liveMode: context.liveMode };
     } catch (error) {
       this.logger.error(
-        `[MembershipCheckout] Failed reference=${dto.reference} phase=${phase} preferenceId=${preferenceId || 'not-created'} elapsedMs=${Date.now() - startedAt} error=${this.errorMessage(error)}`,
+        `[MembershipCheckout] Failed reference=${dto.reference} phase=${phase} preferenceId=${preferenceId || 'not-created'} elapsedMs=${Date.now() - startedAt} error=${this.errorDetails(error)}`,
       );
       throw error;
     }
@@ -663,6 +686,30 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private errorDetails(error: unknown): string {
+    if (error instanceof Error) return JSON.stringify({ name: error.name, message: error.message });
+    if (typeof error !== 'object' || error === null) return String(error);
+    const value = error as Record<string, unknown>;
+    const details: Record<string, string | number | undefined> = {};
+    for (const key of ['name', 'message', 'error', 'status', 'statusCode', 'cause']) {
+      const field = value[key];
+      if (typeof field === 'string' || typeof field === 'number') details[key] = field;
+    }
+    if (Array.isArray(value.cause)) {
+      details.cause = JSON.stringify(
+        value.cause.map((cause) => {
+          if (typeof cause !== 'object' || cause === null) return cause;
+          const item = cause as Record<string, unknown>;
+          return {
+            code: typeof item.code === 'string' ? item.code : undefined,
+            description: typeof item.description === 'string' ? item.description : undefined,
+          };
+        }),
+      );
+    }
+    return JSON.stringify(details);
   }
 
   private internalApiKey(): string {
