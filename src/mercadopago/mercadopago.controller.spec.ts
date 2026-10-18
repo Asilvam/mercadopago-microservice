@@ -3,6 +3,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { MercadopagoController } from './mercadopago.controller';
 import { MercadopagoService } from './mercadopago.service';
 import { ConfigService } from '@nestjs/config';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { InternalApiKeyGuard } from '../common/guards/internal-api-key.guard';
 
 describe('MercadopagoController', () => {
   let controller: MercadopagoController;
@@ -12,6 +14,7 @@ describe('MercadopagoController', () => {
     createPaymentPreference: jest.fn(),
     acceptWebhook: jest.fn(),
     getReliabilityMetrics: jest.fn(),
+    membershipConfiguration: jest.fn(),
   };
 
   const defaultHeaders = {
@@ -40,6 +43,18 @@ describe('MercadopagoController', () => {
   });
 
   afterEach(() => jest.clearAllMocks());
+
+  it('protects monthly configuration with the existing internal key guard', () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, controller.membershipConfiguration)).toContain(InternalApiKeyGuard);
+  });
+
+  it('delegates the read-only monthly configuration check', async () => {
+    const configuration = { ready: true, collectorId: '999', currency: 'CLP' };
+    mockService.membershipConfiguration.mockResolvedValue(configuration);
+    await expect(controller.membershipConfiguration()).resolves.toEqual(configuration);
+    expect(service.membershipConfiguration).toHaveBeenCalledTimes(1);
+    expect(service.createPaymentPreference).not.toHaveBeenCalled();
+  });
 
   it('delega la creación de preferencias', async () => {
     const dto = {

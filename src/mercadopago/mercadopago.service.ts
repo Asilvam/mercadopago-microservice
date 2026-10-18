@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InvalidWebhookSignatureError, MercadoPagoConfig, Payment, Preference, WebhookSignatureValidator } from 'mercadopago';
 import { CreateMpDto } from './dto/create-mp.dto';
@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
 import { WebhookInboxService } from '../audit-log/webhook-inbox.service';
 import { WebhookInboxDocument } from '../audit-log/webhook-inbox.entity';
+import { CreateMembershipPreferenceDto } from './dto/membership-payment.dto';
 
 type WebhookMetadata = Record<string, unknown>;
 
@@ -262,6 +263,166 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async membershipAccount() {
+    const response = await fetch('https://api.mercadopago.com/users/me', {
+      headers: { Authorization: `Bearer ${this.configService.get<string>('MP_ACCESS_TOKEN')}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new ServiceUnavailableException('Could not verify Mercado Pago account.');
+    const account = await response.json();
+    if (!/^\d+$/.test(String(account.id || '')) || account.site_id !== 'MLC') throw new ServiceUnavailableException('A verified Chile account is required.');
+    return String(account.id);
+  }
+
+  async membershipConfiguration() {
+    const collectorId = await this.membershipAccount();
+    this.checkedUrl(this.configService.get<string>('BACKEND_URL'));
+    this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL'));
+    const notification = new URL(this.checkedUrl(this.configService.get<string>('NOTIFICATION_URL')));
+    if (notification.protocol !== 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(notification.hostname) || !this.configService.get<string>('MP_WEBHOOK_SECRET'))
+      throw new ServiceUnavailableException('A signed public HTTPS webhook is required.');
+    this.internalApiKey();
+    return { ready: true, collectorId, currency: 'CLP' };
+  }
+
+  private async membershipPreference(reference: string, collectorId: string, preferenceId?: string) {
+    const result = await new Preference(this.client).search({ options: { external_reference: reference, limit: 100 } });
+    if (!Array.isArray(result.elements) || result.total !== 1 || result.elements.length !== 1)
+      throw new ServiceUnavailableException('The monthly preference could not be verified uniquely.');
+    const preference = result.elements[0];
+    if (
+      !preference.id ||
+      (preferenceId && preference.id !== preferenceId) ||
+      preference.external_reference !== reference ||
+      String(preference.collector_id) !== collectorId ||
+      typeof preference.live_mode !== 'boolean'
+    )
+      throw new ServiceUnavailableException('Monthly preference account or mode could not be verified.');
+    return { id: preference.id, collectorId, liveMode: preference.live_mode };
+  }
+
+  private async verifiedMembershipSnapshot(paymentId: string, payment: any) {
+    const snapshot = this.membershipSnapshot(paymentId, payment);
+    const collectorId = await this.membershipAccount();
+    const preference = await this.membershipPreference(snapshot.reference, collectorId);
+    if (snapshot.collectorId !== collectorId || snapshot.liveMode !== preference.liveMode)
+      throw new ServiceUnavailableException('Payment does not match its verified account or preference mode.');
+    return { ...snapshot, preference };
+  }
+
+  private checkedUrl(value: string) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new ServiceUnavailableException('Monthly URL is not configured.');
+    }
+    if (url.username || url.password || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))))
+      throw new ServiceUnavailableException('An HTTPS or local development URL is required.');
+    return url.toString();
+  }
+
+  async createMembershipPreference(dto: CreateMembershipPreferenceDto) {
+    if (
+      dto.purpose !== 'MEMBERSHIP' ||
+      !/^membership-[a-f\d-]{36}$/i.test(dto.reference) ||
+      !Number.isSafeInteger(dto.amount) ||
+      dto.amount <= 0 ||
+      !['TEST', 'STANDARD'].includes(dto.pricingMode) ||
+      !Number.isFinite(Date.parse(dto.expiresAt)) ||
+      Date.parse(dto.expiresAt) <= Date.now()
+    )
+      throw new BadRequestException('Invalid monthly checkout.');
+    const { collectorId } = await this.membershipConfiguration();
+    const returnUrl = new URL('/monthlypayments', this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL')));
+    returnUrl.searchParams.set('reference', dto.reference);
+    const notificationUrl = this.checkedUrl(this.configService.get<string>('NOTIFICATION_URL'));
+    const monthlyClient = new MercadoPagoConfig({
+      accessToken: this.configService.get<string>('MP_ACCESS_TOKEN'),
+      options: { timeout: 15000, idempotencyKey: dto.reference },
+    });
+    const result = await new Preference(monthlyClient).create({
+      body: {
+        items: [{ id: dto.reference, title: 'Mensualidades Club de Tenis Quintero', quantity: 1, currency_id: 'CLP', unit_price: dto.amount, category_id: 'services' }],
+        external_reference: dto.reference,
+        metadata: { purpose: 'MEMBERSHIP', membership_reference: dto.reference, pricing_mode: dto.pricingMode },
+        back_urls: { success: returnUrl.toString(), failure: returnUrl.toString(), pending: returnUrl.toString() },
+        ...(returnUrl.protocol === 'https:' ? { auto_return: 'approved' as const } : {}),
+        notification_url: notificationUrl,
+        expires: true,
+        expiration_date_from: new Date().toISOString(),
+        expiration_date_to: dto.expiresAt,
+      },
+    });
+    if (String(result.collector_id) !== collectorId) throw new ServiceUnavailableException('Unexpected monthly preference collector.');
+    const context = await this.membershipPreference(dto.reference, collectorId, String(result.id));
+    if (!context.liveMode && dto.pricingMode !== 'TEST') throw new ServiceUnavailableException('Sandbox is restricted to authorized test dues.');
+    const initPoint = context.liveMode ? result.init_point : result.sandbox_init_point;
+    if (!result.id || !initPoint) throw new ServiceUnavailableException('Incomplete monthly preference response.');
+    const checkout = new URL(initPoint);
+    if (checkout.protocol !== 'https:' || checkout.username || checkout.password || !/^(www\.|sandbox\.)?mercadopago\.(cl|com|com\.ar|com\.br)$/.test(checkout.hostname))
+      throw new ServiceUnavailableException('Unexpected Mercado Pago checkout URL.');
+    return { preferenceId: String(result.id), initPoint, collectorId, liveMode: context.liveMode };
+  }
+
+  private membershipSnapshot(paymentId: string, payment: any) {
+    const metadata = payment.metadata;
+    if (
+      !/^\d+$/.test(paymentId) ||
+      String(payment.id) !== paymentId ||
+      !/^membership-[a-f\d-]{36}$/i.test(payment.external_reference || '') ||
+      metadata?.purpose !== 'MEMBERSHIP' ||
+      metadata?.membership_reference !== payment.external_reference ||
+      !['TEST', 'STANDARD'].includes(metadata?.pricing_mode) ||
+      !Number.isSafeInteger(payment.transaction_amount) ||
+      payment.transaction_amount <= 0 ||
+      typeof payment.currency_id !== 'string' ||
+      typeof payment.status !== 'string' ||
+      !/^\d+$/.test(String(payment.collector_id || '')) ||
+      typeof payment.live_mode !== 'boolean'
+    )
+      throw new ServiceUnavailableException('Incomplete or inconsistent monthly provider evidence.');
+    return {
+      paymentId,
+      reference: payment.external_reference,
+      purpose: metadata.purpose,
+      amount: payment.transaction_amount,
+      currency: payment.currency_id,
+      status: payment.status,
+      collectorId: String(payment.collector_id),
+      liveMode: payment.live_mode,
+      pricingMode: metadata.pricing_mode,
+      ...(payment.date_approved ? { approvedAt: payment.date_approved } : {}),
+      ...(payment.date_last_updated ? { updatedAt: payment.date_last_updated } : {}),
+      refundedAmount: payment.transaction_amount_refunded || 0,
+    };
+  }
+
+  async getMembershipPayment(paymentId: string) {
+    if (!/^\d+$/.test(paymentId)) throw new BadRequestException('Invalid payment ID.');
+    return this.verifiedMembershipSnapshot(paymentId, await new Payment(this.client).get({ id: paymentId }));
+  }
+
+  async reconcileMembership(reference: string) {
+    if (!/^membership-[a-f\d-]{36}$/i.test(reference)) throw new BadRequestException('Invalid monthly reference.');
+    const collectorId = await this.membershipAccount();
+    const result = await new Payment(this.client).search({ options: { external_reference: reference, sort: 'date_created', criteria: 'desc', limit: 100 } });
+    if (!Array.isArray(result.results) || !Number.isSafeInteger(result.paging?.total) || result.paging.total !== result.results.length)
+      throw new ServiceUnavailableException('Incomplete reconciliation; do not create a second checkout.');
+    const preference = result.results.length ? await this.membershipPreference(reference, collectorId) : null;
+    for (const payment of result.results) {
+      const snapshot = this.membershipSnapshot(String(payment.id), payment);
+      if (snapshot.reference !== reference || snapshot.collectorId !== collectorId || snapshot.liveMode !== preference.liveMode)
+        throw new ServiceUnavailableException('Mismatched reconciliation reference, account or mode.');
+      const eventKey = createHash('sha256')
+        .update(`membership-reconcile:${JSON.stringify(snapshot)}`)
+        .digest('hex');
+      await this.webhookInboxService.enqueue({ eventKey, paymentId: snapshot.paymentId, eventType: 'payment', payload: { metadata: { source: 'membership-reconciliation' } } });
+    }
+    queueMicrotask(() => void this.drainInbox());
+    return { queued: result.results.length };
+  }
+
   async createPaymentPreference(paymentDTO: CreateMpDto) {
     const successUrl = this.configService.get<string>('MP_SUCCESS_URL');
     const failureUrl = this.configService.get<string>('MP_FAILURE_URL');
@@ -290,11 +451,13 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         },
         auto_return: 'approved',
         notification_url: notificationUrl,
-        ...(paymentDTO.expiresAt ? {
-          expires: true,
-          expiration_date_from: new Date().toISOString(),
-          expiration_date_to: paymentDTO.expiresAt,
-        } : {}),
+        ...(paymentDTO.expiresAt
+          ? {
+              expires: true,
+              expiration_date_from: new Date().toISOString(),
+              expiration_date_to: paymentDTO.expiresAt,
+            }
+          : {}),
         metadata: {
           courtId,
           date,
@@ -316,9 +479,14 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
   }
 
   async reconcileReservation(reservationId: string): Promise<{ status: string }> {
-    const result = await new Payment(this.client).search({ options: {
-      external_reference: reservationId, sort: 'date_created', criteria: 'desc', limit: 100,
-    } });
+    const result = await new Payment(this.client).search({
+      options: {
+        external_reference: reservationId,
+        sort: 'date_created',
+        criteria: 'desc',
+        limit: 100,
+      },
+    });
     const payments = result.results;
     const total = result.paging?.total;
     // Never release on a malformed or partial response.
@@ -331,7 +499,9 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       // Internal authenticated reconciliation also needs durable retries, especially
       // when the reservation is activated but the email service is unavailable.
       await this.webhookInboxService.enqueue({
-        eventKey, paymentId, eventType: 'payment',
+        eventKey,
+        paymentId,
+        eventType: 'payment',
         payload: { metadata: { source: 'hold-expiration' } },
       });
       queueMicrotask(() => void this.drainInbox());
@@ -362,6 +532,24 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     try {
       const paymentSDK = new Payment(this.client);
       const paymentInfo = await paymentSDK.get({ id: paymentId });
+
+      // Monthly references never reach reservation activation or reservation email callbacks.
+      if (paymentInfo.metadata?.purpose === 'MEMBERSHIP' || paymentInfo.external_reference?.startsWith('membership-')) {
+        const snapshot = await this.verifiedMembershipSnapshot(paymentId, paymentInfo);
+        const fingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+        const effectKey = `membership:${paymentId}:${fingerprint}`;
+        await this.webhookInboxService.executeEffectOnce(effectKey, String(requestMetadata.eventKey || paymentId), 'MEMBERSHIP_PAYMENT', async () => {
+          const backend = this.checkedUrl(this.configService.get<string>('BACKEND_URL'));
+          const response = await fetch(`${backend.replace(/\/$/, '')}/membership-billing/internal/mercado-pago`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': this.internalApiKey() },
+            body: JSON.stringify({ paymentId }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!response.ok) throw new Error(`Membership callback HTTP ${response.status}`);
+        });
+        return;
+      }
 
       this.logger.log(`[Webhook] Estado del pago: ${paymentInfo.status}`);
       this.logger.log(`[Webhook] External Reference: ${paymentInfo.external_reference}`);

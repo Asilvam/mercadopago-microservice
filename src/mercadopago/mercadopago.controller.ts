@@ -1,8 +1,9 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logger, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Ip, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { MercadopagoService } from './mercadopago.service';
 import { CreateMpDto } from './dto/create-mp.dto';
 import { InternalApiKeyGuard } from '../common/guards/internal-api-key.guard';
 import { ReconcileReservationDto } from './dto/reconcile-reservation.dto';
+import { CreateMembershipPreferenceDto, ReconcileMembershipDto } from './dto/membership-payment.dto';
 
 @Controller('mercadopago')
 export class MercadopagoController {
@@ -28,6 +29,30 @@ export class MercadopagoController {
       status: metrics.audit.connected ? 'ok' : 'degraded',
       metrics,
     };
+  }
+
+  @Post('membership/create-preference')
+  @UseGuards(InternalApiKeyGuard)
+  createMembership(@Body() dto: CreateMembershipPreferenceDto) {
+    return this.mercadopagoService.createMembershipPreference(dto);
+  }
+
+  @Get('membership/configuration')
+  @UseGuards(InternalApiKeyGuard)
+  membershipConfiguration() {
+    return this.mercadopagoService.membershipConfiguration();
+  }
+
+  @Get('membership/payments/:paymentId')
+  @UseGuards(InternalApiKeyGuard)
+  membershipPayment(@Param('paymentId') paymentId: string) {
+    return this.mercadopagoService.getMembershipPayment(paymentId);
+  }
+
+  @Post('membership/reconcile')
+  @UseGuards(InternalApiKeyGuard)
+  reconcileMembership(@Body() dto: ReconcileMembershipDto) {
+    return this.mercadopagoService.reconcileMembership(dto.reference);
   }
 
   @Post('webhook') // Mercado Pago usa POST aunque los datos estén en la URL
