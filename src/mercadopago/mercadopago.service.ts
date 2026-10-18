@@ -292,11 +292,11 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     let result: Awaited<ReturnType<InstanceType<typeof Preference>['search']>>;
     try {
       // A successful create can precede indexing; retry only empty readbacks of that known preference.
-      for (let attempt = 0; attempt < 4; attempt++) {
+      for (let attempt = 0; attempt < 5; attempt++) {
         result = await new Preference(this.client).search({ options });
         const indexingDelay = preferenceId && result.total === 0 && Array.isArray(result.elements) && result.elements.length === 0;
-        if (!indexingDelay || attempt === 3) break;
-        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+        if (!indexingDelay || attempt === 4) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
       }
     } catch (error) {
       this.logger.error(

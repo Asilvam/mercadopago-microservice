@@ -65,6 +65,7 @@ describe('Membership Mercado Pago purpose isolation', () => {
     fetchMock.mockReset().mockResolvedValue({ ok: true, json: async () => ({ id: 999, site_id: 'MLC' }) });
     global.fetch = fetchMock;
   });
+  afterEach(() => jest.useRealTimers());
   it('creates a separate monthly preference with exact amount, metadata, expiration and return reference', async () => {
     const result = await service.createMembershipPreference(dto());
     expect(result.preferenceId).toBe('pref-fixture');
@@ -99,16 +100,33 @@ describe('Membership Mercado Pago purpose isolation', () => {
     expect(preferenceSearch).toHaveBeenLastCalledWith({ options: { external_reference: reference, limit: 2 } });
   });
   it('retries lagging preference indexing without creating another checkout', async () => {
+    jest.useFakeTimers();
     preferenceSearch.mockResolvedValueOnce({ total: 0, elements: [] }).mockResolvedValueOnce({ total: 0, elements: [] });
-    expect((await service.createMembershipPreference(dto())).preferenceId).toBe('pref-fixture');
+    const result = service.createMembershipPreference(dto());
+    await jest.runAllTimersAsync();
+    expect((await result).preferenceId).toBe('pref-fixture');
     expect(create).toHaveBeenCalledTimes(1);
     expect(preferenceSearch).toHaveBeenCalledTimes(3);
   });
   it('fails closed after bounded empty readbacks and never retries preference creation', async () => {
+    jest.useFakeTimers();
     preferenceSearch.mockResolvedValue({ total: 0, elements: [] });
-    await expect(service.createMembershipPreference(dto())).rejects.toThrow('verified uniquely');
+    const rejected = expect(service.createMembershipPreference(dto())).rejects.toThrow('verified uniquely');
+    await jest.runAllTimersAsync();
+    await rejected;
     expect(create).toHaveBeenCalledTimes(1);
-    expect(preferenceSearch).toHaveBeenCalledTimes(4);
+    expect(preferenceSearch).toHaveBeenCalledTimes(5);
+  });
+  it('accepts indexing that becomes visible after seven seconds without creating a duplicate', async () => {
+    jest.useFakeTimers();
+    for (let i = 0; i < 4; i++) preferenceSearch.mockResolvedValueOnce({ total: 0, elements: [] });
+    const startedAt = Date.now();
+    const result = service.createMembershipPreference(dto());
+    await jest.runAllTimersAsync();
+    expect((await result).preferenceId).toBe('pref-fixture');
+    expect(Date.now() - startedAt).toBe(15000);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(preferenceSearch).toHaveBeenCalledTimes(5);
   });
   it('requires a verified Chile account before creating a preference, with no monthly env variables', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 999, site_id: 'MLA' }) });
