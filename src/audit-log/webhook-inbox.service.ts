@@ -108,7 +108,7 @@ export class WebhookInboxService implements OnModuleInit {
           },
           $inc: { attempts: 1 },
         },
-        { new: true, sort: { nextAttemptAt: 1, createdAt: 1 } },
+        { returnDocument: 'after', sort: { nextAttemptAt: 1, createdAt: 1 } },
       )
       .exec();
 
@@ -234,7 +234,7 @@ export class WebhookInboxService implements OnModuleInit {
           },
           $inc: { attempts: 1 },
         },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec() as Promise<WebhookEffectDocument | null>;
   }

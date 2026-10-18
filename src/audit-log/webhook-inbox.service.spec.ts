@@ -135,7 +135,7 @@ describe('WebhookInboxService', () => {
         $set: expect.objectContaining({ status: WebhookInboxStatus.PROCESSING }),
         $inc: { attempts: 1 },
       }),
-      expect.objectContaining({ new: true }),
+      expect.objectContaining({ returnDocument: 'after' }),
     );
   });
 
