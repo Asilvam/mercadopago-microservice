@@ -364,7 +364,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`[MembershipCheckout] Started reference=${dto.reference} mode=${dto.pricingMode} amount=${dto.amount}`);
     try {
       const { collectorId } = await this.membershipConfiguration();
-      const returnUrl = new URL('/monthlypayments', this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL')));
+      const returnUrl = new URL('/monthlypayments/return', this.checkedUrl(this.configService.get<string>('MP_SUCCESS_URL')));
       returnUrl.searchParams.set('reference', dto.reference);
       const notificationUrl = this.checkedUrl(this.configService.get<string>('NOTIFICATION_URL'));
       const monthlyClient = new MercadoPagoConfig({

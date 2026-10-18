@@ -74,7 +74,7 @@ describe('Membership Mercado Pago purpose isolation', () => {
     expect(body.items[0]).toMatchObject({ unit_price: 180, currency_id: 'CLP' });
     expect(body.metadata).toEqual({ purpose: 'MEMBERSHIP', membership_reference: reference, pricing_mode: 'TEST' });
     expect(body.back_urls.success).toContain(`reference=${reference}`);
-    expect(body.back_urls.success).toBe(`http://localhost:5173/monthlypayments?reference=${reference}`);
+    expect(body.back_urls.success).toBe(`http://localhost:5173/monthlypayments/return?reference=${reference}`);
     expect(body.auto_return).toBeUndefined();
     expect(body.expires).toBe(true);
   });
@@ -82,7 +82,7 @@ describe('Membership Mercado Pago purpose isolation', () => {
     settings.MP_SUCCESS_URL = 'https://frontend.example.invalid/payment/success';
     await service.createMembershipPreference(dto());
     const body = create.mock.calls[0][0].body;
-    expect(body.back_urls.success).toBe(`https://frontend.example.invalid/monthlypayments?reference=${reference}`);
+    expect(body.back_urls.success).toBe(`https://frontend.example.invalid/monthlypayments/return?reference=${reference}`);
     expect(body.back_urls.pending).toBe(body.back_urls.success);
     expect(body.back_urls.failure).toBe(body.back_urls.success);
     expect(body.auto_return).toBe('approved');
