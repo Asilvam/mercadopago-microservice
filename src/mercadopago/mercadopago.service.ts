@@ -291,7 +291,13 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     this.logger.debug(`[MembershipPreferenceLookup] Started reference=${reference} expectedPreferenceId=${preferenceId || 'any'} limit=${options.limit}`);
     let result: Awaited<ReturnType<InstanceType<typeof Preference>['search']>>;
     try {
-      result = await new Preference(this.client).search({ options });
+      // A successful create can precede indexing; retry only empty readbacks of that known preference.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        result = await new Preference(this.client).search({ options });
+        const indexingDelay = preferenceId && result.total === 0 && Array.isArray(result.elements) && result.elements.length === 0;
+        if (!indexingDelay || attempt === 3) break;
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+      }
     } catch (error) {
       this.logger.error(
         `[MembershipPreferenceLookup] Search failed reference=${reference} expectedPreferenceId=${preferenceId || 'any'} elapsedMs=${Date.now() - startedAt} error=${this.errorDetails(error)}`,

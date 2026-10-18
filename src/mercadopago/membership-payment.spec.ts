@@ -98,6 +98,18 @@ describe('Membership Mercado Pago purpose isolation', () => {
     await service.getMembershipPayment('123');
     expect(preferenceSearch).toHaveBeenLastCalledWith({ options: { external_reference: reference, limit: 2 } });
   });
+  it('retries lagging preference indexing without creating another checkout', async () => {
+    preferenceSearch.mockResolvedValueOnce({ total: 0, elements: [] }).mockResolvedValueOnce({ total: 0, elements: [] });
+    expect((await service.createMembershipPreference(dto())).preferenceId).toBe('pref-fixture');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(preferenceSearch).toHaveBeenCalledTimes(3);
+  });
+  it('fails closed after bounded empty readbacks and never retries preference creation', async () => {
+    preferenceSearch.mockResolvedValue({ total: 0, elements: [] });
+    await expect(service.createMembershipPreference(dto())).rejects.toThrow('verified uniquely');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(preferenceSearch).toHaveBeenCalledTimes(4);
+  });
   it('requires a verified Chile account before creating a preference, with no monthly env variables', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 999, site_id: 'MLA' }) });
     await expect(service.createMembershipPreference(dto())).rejects.toThrow('Chile');
