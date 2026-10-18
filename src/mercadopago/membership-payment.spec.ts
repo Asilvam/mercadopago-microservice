@@ -92,6 +92,12 @@ describe('Membership Mercado Pago purpose isolation', () => {
     preferenceSearch.mockResolvedValue({ total: 1, elements: [{ id: 'pref-fixture', collector_id: 999, external_reference: reference, live_mode: false }] });
     expect((await service.createMembershipPreference(dto())).initPoint).toContain('sandbox.mercadopago.cl');
   });
+  it('uses a supported preference search limit while checking uniqueness', async () => {
+    await service.createMembershipPreference(dto());
+    expect(preferenceSearch).toHaveBeenCalledWith({ options: { external_reference: reference, limit: 2 } });
+    await service.getMembershipPayment('123');
+    expect(preferenceSearch).toHaveBeenLastCalledWith({ options: { external_reference: reference, limit: 2 } });
+  });
   it('requires a verified Chile account before creating a preference, with no monthly env variables', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 999, site_id: 'MLA' }) });
     await expect(service.createMembershipPreference(dto())).rejects.toThrow('Chile');

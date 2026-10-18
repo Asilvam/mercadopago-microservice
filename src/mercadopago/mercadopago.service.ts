@@ -286,11 +286,9 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async membershipPreference(reference: string, collectorId: string, preferenceId?: string) {
-    const options = { external_reference: reference, limit: 100 };
+    const options = { external_reference: reference, limit: 2 };
     const startedAt = Date.now();
-    this.logger.debug(
-      `[MembershipPreferenceLookup] Started reference=${reference} expectedPreferenceId=${preferenceId || 'any'} limit=${options.limit}`,
-    );
+    this.logger.debug(`[MembershipPreferenceLookup] Started reference=${reference} expectedPreferenceId=${preferenceId || 'any'} limit=${options.limit}`);
     let result: Awaited<ReturnType<InstanceType<typeof Preference>['search']>>;
     try {
       result = await new Preference(this.client).search({ options });
@@ -318,9 +316,7 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       );
       throw new ServiceUnavailableException('Monthly preference account or mode could not be verified.');
     }
-    this.logger.debug(
-      `[MembershipPreferenceLookup] Verified reference=${reference} preferenceId=${preference.id} liveMode=${preference.live_mode}`,
-    );
+    this.logger.debug(`[MembershipPreferenceLookup] Verified reference=${reference} preferenceId=${preference.id} liveMode=${preference.live_mode}`);
     return { id: preference.id, collectorId, liveMode: preference.live_mode };
   }
 
@@ -396,7 +392,9 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
       const checkout = new URL(initPoint);
       if (checkout.protocol !== 'https:' || checkout.username || checkout.password || !/^(www\.|sandbox\.)?mercadopago\.(cl|com|com\.ar|com\.br)$/.test(checkout.hostname))
         throw new ServiceUnavailableException('Unexpected Mercado Pago checkout URL.');
-      this.logger.log(`[MembershipCheckout] Checkout ready reference=${dto.reference} preferenceId=${preferenceId} liveMode=${context.liveMode} elapsedMs=${Date.now() - startedAt}`);
+      this.logger.log(
+        `[MembershipCheckout] Checkout ready reference=${dto.reference} preferenceId=${preferenceId} liveMode=${context.liveMode} elapsedMs=${Date.now() - startedAt}`,
+      );
       return { preferenceId, initPoint, collectorId, liveMode: context.liveMode };
     } catch (error) {
       this.logger.error(
