@@ -476,6 +476,11 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('[createPaymentPreference] Creando preferencia de pago...');
     try {
       const { courtId, date, time, player1, amount, idCourtReserve } = paymentDTO;
+      const reservationReturnUrl = (configured: string) => {
+        const url = new URL(configured);
+        url.searchParams.set('reservation', idCourtReserve);
+        return url.toString();
+      };
       const preferenceBody = {
         items: [
           {
@@ -490,9 +495,9 @@ export class MercadopagoService implements OnModuleInit, OnModuleDestroy {
         ],
         external_reference: idCourtReserve, // ID único de tu sistema
         back_urls: {
-          success: successUrl,
-          failure: failureUrl,
-          pending: pendingUrl,
+          success: reservationReturnUrl(successUrl),
+          failure: reservationReturnUrl(failureUrl),
+          pending: reservationReturnUrl(pendingUrl),
         },
         auto_return: 'approved',
         notification_url: notificationUrl,

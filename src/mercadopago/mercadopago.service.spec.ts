@@ -234,9 +234,9 @@ describe('MercadopagoService', () => {
           auto_return: 'approved',
           notification_url: 'http://localhost/webhook',
           back_urls: {
-            success: 'http://localhost/success',
-            failure: 'http://localhost/failure',
-            pending: 'http://localhost/pending',
+            success: 'http://localhost/success?reservation=reserve-001',
+            failure: 'http://localhost/failure?reservation=reserve-001',
+            pending: 'http://localhost/pending?reservation=reserve-001',
           },
           metadata: {
             courtId: 'cancha-1',
@@ -255,6 +255,45 @@ describe('MercadopagoService', () => {
       await expect(service.createPaymentPreference(validDto as any)).rejects.toThrow(
         'No se pudo crear la preferencia de pago. Intente nuevamente.',
       );
+    });
+
+    it('preserves configured return query/hash and replaces only the reservation locator', async () => {
+      const previous = envConfig.MP_SUCCESS_URL;
+      try {
+        envConfig.MP_SUCCESS_URL = 'https://ctq.serviciosasm.cl/payment/success?source=ctq&reservation=old#return';
+        mockPreferenceCreate.mockResolvedValue({ id: 'fixture', init_point: 'https://www.mercadopago.cl/checkout/fixture' });
+        await service.createPaymentPreference(validDto as any);
+        const url = new URL(mockPreferenceCreate.mock.calls[0][0].body.back_urls.success);
+        expect(url.searchParams.get('reservation')).toBe(validDto.idCourtReserve);
+        expect(url.searchParams.getAll('reservation')).toHaveLength(1);
+        expect(url.searchParams.get('source')).toBe('ctq');
+        expect(url.hash).toBe('#return');
+      } finally {
+        envConfig.MP_SUCCESS_URL = previous;
+      }
+    });
+
+    it('uses the CTQ reservation return URLs without changing amount or notification URL', async () => {
+      const snapshot = { ...envConfig };
+      try {
+        envConfig.MP_SUCCESS_URL = 'https://ctq.serviciosasm.cl/payment/success';
+        envConfig.MP_FAILURE_URL = 'https://ctq.serviciosasm.cl/payment/failure';
+        envConfig.MP_PENDING_URL = 'https://ctq.serviciosasm.cl/payment/pending';
+        mockPreferenceCreate.mockResolvedValue({ id: 'ctq-fixture', init_point: 'https://www.mercadopago.cl/checkout/fixture' });
+        await service.createPaymentPreference(validDto as any);
+        const body = mockPreferenceCreate.mock.calls[0][0].body;
+        expect(body.back_urls).toEqual({
+          success: `${envConfig.MP_SUCCESS_URL}?reservation=${validDto.idCourtReserve}`,
+          failure: `${envConfig.MP_FAILURE_URL}?reservation=${validDto.idCourtReserve}`,
+          pending: `${envConfig.MP_PENDING_URL}?reservation=${validDto.idCourtReserve}`,
+        });
+        expect(body.items[0].unit_price).toBe(validDto.amount);
+        expect(body.external_reference).toBe(validDto.idCourtReserve);
+        expect(body.notification_url).toBe(snapshot.NOTIFICATION_URL);
+        expect(envConfig.BACKEND_URL).toBe(snapshot.BACKEND_URL);
+      } finally {
+        Object.assign(envConfig, snapshot);
+      }
     });
   });
 

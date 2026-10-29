@@ -93,6 +93,24 @@ describe('Membership Mercado Pago purpose isolation', () => {
     preferenceSearch.mockResolvedValue({ total: 1, elements: [{ id: 'pref-fixture', collector_id: 999, external_reference: reference, live_mode: false }] });
     expect((await service.createMembershipPreference(dto())).initPoint).toContain('sandbox.mercadopago.cl');
   });
+
+  it.each(['https://ctq.serviciosasm.cl', 'https://app-tenis-qtro-2-be6b838be293.herokuapp.com'])(
+    'preserves monthly purpose and webhook when using frontend %s', async (origin) => {
+      settings.MP_SUCCESS_URL = `${origin}/payment/success`;
+      const previous = { ...settings };
+      await service.createMembershipPreference(dto());
+      const body = create.mock.calls[0][0].body;
+      const expected = `${origin}/monthlypayments/return?reference=${reference}`;
+      expect(body.back_urls).toEqual({ success: expected, failure: expected, pending: expected });
+      expect(body.external_reference).toBe(reference);
+      expect(body.items[0].unit_price).toBe(180);
+      expect(body.metadata.purpose).toBe('MEMBERSHIP');
+      expect(body.notification_url).toBe(previous.NOTIFICATION_URL);
+      expect(body.auto_return).toBe('approved');
+      expect(settings).toEqual(previous);
+      expect(create).toHaveBeenCalledTimes(1);
+    },
+  );
   it('uses a supported preference search limit while checking uniqueness', async () => {
     await service.createMembershipPreference(dto());
     expect(preferenceSearch).toHaveBeenCalledWith({ options: { external_reference: reference, limit: 2 } });

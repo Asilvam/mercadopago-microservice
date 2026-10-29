@@ -2,6 +2,20 @@
 
 Microservicio construido con [NestJS](https://nestjs.com/) para gestionar pagos de reservas de canchas deportivas mediante [MercadoPago](https://www.mercadopago.cl/developers). Incluye recepción de webhooks, actualización automática del estado de reservas, envío de correos de confirmación y auditoría completa en MongoDB.
 
+## Referencia explicita en retorno de reservas (2026-10-29)
+
+`createPaymentPreference` agrega `reservation=<idCourtReserve>` a las tres
+URLs configuradas (`MP_SUCCESS_URL`, `MP_FAILURE_URL`, `MP_PENDING_URL`) con
+`URL.searchParams`. Conserva parametros existentes, monto, external_reference,
+notification_url y flujo del webhook. No agrega variables ni requiere cambiar
+sus valores. Preferencias antiguas conservan sus URLs; el frontend admite
+`external_reference` para ellas y nunca confia en `status` del navegador.
+
+Estado: codigo local sin desplegar. Contrato/evidencias coordinados con
+`../tennis-court-front/docs/correccion-retorno-reservas.md`.
+Validacion: `src/mercadopago/mercadopago.service.spec.ts`, SDK simulado;
+no constituye evidencia de un cobro real.
+
 ## Stack Tecnológico
 
 | Tecnología | Uso |
@@ -247,6 +261,53 @@ Antes de desplegar, validar la migración con una base de pruebas que contenga l
 - Payloads y metadata se limitan, enmascaran correos y eliminan tokens, firmas, cookies y credenciales.
 
 ## Deployment
+
+### Dominio CTQ: etapa 2 (2026-10-29)
+
+Se actualizaron juntas en Heroku las tres variables existentes de retorno:
+
+| Variable | Valor de produccion |
+| --- | --- |
+| `MP_SUCCESS_URL` | `https://ctq.serviciosasm.cl/payment/success` |
+| `MP_FAILURE_URL` | `https://ctq.serviciosasm.cl/payment/failure` |
+| `MP_PENDING_URL` | `https://ctq.serviciosasm.cl/payment/pending` |
+
+Antes usaban las mismas rutas bajo
+`https://app-tenis-qtro-2-be6b838be293.herokuapp.com`. Las preferencias nuevas
+de reservas usan esos retornos. Mensualidades deriva
+`https://ctq.serviciosasm.cl/monthlypayments/return?reference=...` del origen de
+`MP_SUCCESS_URL`, para success/failure/pending; no requiere otra variable.
+
+Las preferencias ya emitidas pueden conservar el host anterior: no se editaron
+ni recrearon. Ambos dominios siguen atendidos por el mismo frontend de Heroku.
+Cambiar el retorno nunca confirma un pago ni sustituye la consulta/verificacion
+del proveedor y la persistencia del backend.
+
+`NOTIFICATION_URL`, `BACKEND_URL`, cuenta receptora, modo de Mercado Pago,
+credenciales, tarifas, webhooks y registros financieros no cambian por esta
+configuracion. La actualizacion de config reinicia el servicio con el codigo
+ya desplegado; no despliega el trabajo local ni crea preferencias/pagos.
+
+`npm test -- --runInBand --silent` incluye casos del dominio nuevo para reservas
+y mensualidades con SDK/fetch/BD simulados, conservando importe, metadata,
+referencia y webhook. No se hicieron cobros ni checkouts reales para esta etapa.
+La verificacion funcional completa del checkout queda para la etapa 3.
+
+Los ejemplos locales se mantienen en `.env.example`. El informe central esta en
+`tennis-court-front/docs/mejora-ctq-cloudflare.md`. Para revertir, restaurar juntas
+las tres URLs anteriores, sin eliminar el dominio nuevo mientras existan
+preferencias que puedan retornar a el.
+
+Etapa 3 (2026-10-29): se repitio la suite completa (**128 pruebas, 8 suites,
+sin omisiones**). La matriz integrada del frontend/backend uso un adaptador
+de proveedor simulado, no este servicio conectado a Mercado Pago real. Verifico
+cancelacion sin liquidar, bloqueo de solapamiento mientras la preferencia siga
+vigente, aprobacion/idempotencia y rechazo de estados falsos del navegador en
+mensualidades. No se crearon preferencias ni cobros reales. Se reprodujo en los
+dos frontends publicados un aviso de exito de reservas basado solo en la URL;
+no se modifico el ledger y no es una confirmacion valida del proveedor. Ese
+hallazgo del frontend impide aprobar el cierre global sin una decision/correccion.
+Informe: `tennis-court-front/docs/ctq-cloudflare-stage3-validacion.md`.
 
 El proyecto incluye un [`Procfile`](Procfile) para despliegue en plataformas como Heroku o Railway:
 
